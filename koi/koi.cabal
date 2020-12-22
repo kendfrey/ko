@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: d4abb3257ab23ec0130fd30c915d7ed20d0e67c91fb078cdabdd89db6f65d00b
+-- hash: 2d20e2b479dff6f72c8a7fca500d86dabee967a9ae652fe3f7f7f55a50dc4388
 
 name:           koi
 version:        0.1.0.0
@@ -17,7 +17,8 @@ build-type:     Simple
 executable koi
   main-is: Main.hs
   other-modules:
-      Program
+      Koi.Flag
+      Koi.Program
       Paths_koi
   hs-source-dirs:
       src

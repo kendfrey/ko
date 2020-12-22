@@ -1,4 +1,4 @@
-module Program where
+module Koi.Program where
 
 import Control.Monad.Reader
 import Data.Array.IArray
