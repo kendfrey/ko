@@ -1,0 +1,14 @@
+_size 0x10; #16x16
+_define line1 <0x0f,0o00,0b0,2+4-0b101,0>; # <16, 0, 0, 1, 0>
+
+:start
+black [0,0];
+if line1 continue;
+goto start;
+:continue
+copy [0,0] [0,15]
+table <2, 0, 15, 0, 0>-3 continue2;
+white[0,0];
+:continue2
+:end
+pass;

@@ -32,3 +32,4 @@ executables:
     - array
     - containers
     - mtl
+    - parsec
