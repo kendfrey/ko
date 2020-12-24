@@ -1,6 +1,10 @@
 {-# LANGUAGE TupleSections #-}
 
-module Koi.Lexer where
+module Koi.Lexer
+  ( lexer
+  , Token(..)
+  , TokenType(..)
+  ) where
 
 import Control.Monad
 import Text.Parsec
@@ -21,10 +25,10 @@ data TokenType
   | RBracket
   | LAngle
   | RAngle
-  deriving Show
+  deriving (Eq, Show)
 
-data Token = TokenInfo { tokenValue :: String, tokenType :: TokenType, tokenPos :: SourcePos }
-  deriving Show
+data Token = Token { tokenValue :: String, tokenType :: TokenType, tokenPos :: SourcePos }
+  deriving (Show)
 
 lexer :: Parser [Token]
 lexer = do
@@ -46,7 +50,7 @@ parseToken = do
   p <- getPosition
   (s, t) <- getToken
   ignored
-  pure (TokenInfo s t p)
+  pure (Token s t p)
 
 getToken :: Parser (String, TokenType)
 getToken = identifier <|> decimal <|> hex <|> octal <|> binary <|> choice (symbol <$> symbols)

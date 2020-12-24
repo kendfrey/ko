@@ -1,3 +1,5 @@
-module Koi.Flag where
+module Koi.Flag
+  ( Flag
+  ) where
 
 data Flag

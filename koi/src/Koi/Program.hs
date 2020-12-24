@@ -4,25 +4,24 @@ import Control.Monad.Reader
 import Data.Array.IArray
 import Data.Array.IO
 import Data.Map (Map)
-import qualified Data.Map as M
 
 data Program = Program
-  { size :: (Int, Int)
-  , declarations :: Map String Expr
-  , labels :: Map String Int
-  , code :: Array Int Command
+  { programSize :: (Int, Int)
+  , programLabels :: Map String Int
+  , programCode :: Array Int Command
   }
+  deriving (Show)
 
 data BoardPos = Empty | Black | White
 
 type Board = IOArray (Int, Int) BoardPos
 
-data Value
-  = Lit Int
-  | Decl String
-  | Ptr Pointer
-
-data Expr = EValue Value | EAdd Expr Value | ESub Expr Value
+data Expr
+  = ELit Int
+  | EPtr Pointer
+  | EAdd Expr Expr
+  | ESub Expr Expr
+  deriving (Show)
 
 data Pointer = Pointer
   { bits :: Expr
@@ -31,42 +30,36 @@ data Pointer = Pointer
   , xStep :: Expr
   , yStep :: Expr
   }
-
-data Mode = StoneMode | BlackMode | WhiteMode
+  deriving (Show)
 
 data Command
   = Goto String
   | Pass
   | PlayBlack Pointer
   | PlayWhite Pointer
-  | If Mode Pointer String
-  | Table Mode Pointer (Array Int String)
+  | If Expr String
+  | Table Expr (Array Int String)
   | Copy Pointer Pointer
+  deriving (Show)
 
-readBit :: BoardPos -> Mode -> Int
-readBit Empty _ = 0
-readBit _ StoneMode = 1
-readBit Black BlackMode = 1
-readBit White WhiteMode = 1
-readBit _ _ = 0
+toBit :: BoardPos -> Int
+toBit Empty = 0
+toBit _ = 1
 
-readPointer :: Int -> Int -> Int -> Int -> Int -> ReaderT (Map String Expr, Board, Mode) IO Int
+readPointer :: Int -> Int -> Int -> Int -> Int -> ReaderT Board IO Int
 readPointer b _ _ _ _ | b <= 0 = pure 0
 readPointer b x y dx dy = do
-  (_, board, mode) <- ask
+  board <- ask
   bit <- liftIO (readArray board (x, y))
-  let lsb = readBit bit mode
   rest <- readPointer (b - 1) (x + dx) (y + dy) dx dy
-  pure (rest * 2 + lsb)
+  pure (rest * 2 + toBit bit)
 
-evalExpr :: Expr -> ReaderT (Map String Expr, Board, Mode) IO Int
-evalExpr (EValue x) = evalValue x
-evalExpr (EAdd e x) = (+) <$> evalExpr e <*> evalValue x
-evalExpr (ESub e x) = (-) <$> evalExpr e <*> evalValue x
+evalExpr :: Expr -> ReaderT Board IO Int
+evalExpr (ELit x) = pure x
+evalExpr (EPtr (Pointer b x y dx dy)) = join $ readPointer <$> evalExpr b <*> evalExpr x <*> evalExpr y <*> evalExpr dx <*> evalExpr dy
+evalExpr (EAdd e x) = (+) <$> evalExpr e <*> evalExpr x
+evalExpr (ESub e x) = (-) <$> evalExpr e <*> evalExpr x
 
-evalValue :: Value -> ReaderT (Map String Expr, Board, Mode) IO Int
-evalValue (Lit x) = pure x
-evalValue (Decl x) = do
-  (decl, _, _) <- ask
-  evalExpr (decl M.! x)
-evalValue (Ptr (Pointer b x y dx dy)) = join $ readPointer <$> evalExpr b <*> evalExpr x <*> evalExpr y <*> evalExpr dx <*> evalExpr dy
+toPointer :: Expr -> Maybe Pointer
+toPointer (EPtr p) = Just p
+toPointer _ = Nothing -- TODO pointer arithmetic
