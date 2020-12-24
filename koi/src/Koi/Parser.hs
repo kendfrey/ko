@@ -1,3 +1,5 @@
+{-# LANGUAGE TupleSections #-}
+
 module Koi.Parser
   ( readProgram
   ) where
@@ -21,7 +23,7 @@ readProgram file = parseFromFile parseProgram file
 parseProgram :: Parser Program
 parseProgram = do
   toks <- lexer
-  case runParser program (ParserState { size = Nothing, definitions = M.empty, inPrelude = True }) "myfile.ko" toks of
+  case runParser program (ParserState { size = Nothing, definitions = M.empty, inPrelude = True }) "" toks of
     Right result -> pure result
     Left err -> fail $ show err
 
@@ -29,12 +31,27 @@ data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map St
 
 program :: Parsec [Token] ParserState Program
 program = do
-  statements <- endBy statement (symbolToken Semicolon)
+  statements <- catMaybes <$> endBy statement (symbolToken Semicolon)
   eof
   s <- size <$> getState
-  pure Program { programSize = fromMaybe (256, 256) s, programLabels = M.empty, programCode = listToArray (snd <$> catMaybes statements) }
+  case buildLabels (fst <$> statements) of
+    Right m -> pure Program { programSize = fromMaybe (256, 256) s, programLabels = m, programCode = listToArray (snd <$> statements) }
+    Left (p, l) -> do
+      fail $ l ++ " is already defined"
 
-statement :: Parsec [Token] ParserState (Maybe (Maybe String, Command))
+buildLabels :: [Maybe (SourcePos, String)] -> Either (SourcePos, String) (Map String Int)
+buildLabels = buildLabelsImpl 0 M.empty
+
+buildLabelsImpl :: Int -> Map String Int -> [Maybe (SourcePos, String)] -> Either (SourcePos, String) (Map String Int)
+buildLabelsImpl _ m [] = Right m
+buildLabelsImpl x m (Nothing : cs) = buildLabelsImpl (x + 1) m cs
+buildLabelsImpl x m (Just (p, l) : cs) =
+  if M.member l m then
+    Left (p, l)
+  else
+    buildLabelsImpl (x + 1) (M.insert l x m) cs
+
+statement :: Parsec [Token] ParserState (Maybe (Maybe (SourcePos, String), Command))
 statement = Nothing <$ pragma <|> Just <$> command
 
 pragma :: Parsec [Token] ParserState ()
@@ -64,13 +81,14 @@ definitionPragma = do
   else
     putState $ s { definitions = M.insert name val (definitions s) }
 
-command :: Parsec [Token] ParserState (Maybe String, Command)
+command :: Parsec [Token] ParserState (Maybe (SourcePos, String), Command)
 command = do
+  p <- getPosition
   l <- optionMaybe lbl
   c <- commandBody
   s <- getState
   putState $ s { inPrelude = False }
-  pure (l, c)
+  pure ((p,) <$> l, c)
 
 lbl :: Parsec [Token] ParserState String
 lbl = do

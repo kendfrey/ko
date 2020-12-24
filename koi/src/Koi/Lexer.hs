@@ -28,7 +28,9 @@ data TokenType
   deriving (Eq, Show)
 
 data Token = Token { tokenValue :: String, tokenType :: TokenType, tokenPos :: SourcePos }
-  deriving (Show)
+
+instance Show Token where
+  show = tokenValue
 
 lexer :: Parser [Token]
 lexer = do
