@@ -7,6 +7,7 @@ import Koi.Parser
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import Text.Megaparsec.Error
 
 main :: IO ()
 main = do
@@ -15,12 +16,13 @@ main = do
   if null errors then
     if length inputs == 1 then do
       let fileName = head inputs
-      parsed <- readProgram fileName
-      case parsed of
+      code <- readFile fileName
+      case parseProgram fileName code of
         Right prog ->
           print prog
-        Left err ->
-          print err
+        Left err -> do
+          putStr $ errorBundlePretty err
+          exitWith (ExitFailure 3)
     else do
       putStrLn "Expected a command line argument containing the name of the file to execute."
       exitWith (ExitFailure 2)

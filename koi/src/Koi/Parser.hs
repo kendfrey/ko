@@ -1,218 +1,248 @@
 {-# LANGUAGE TupleSections #-}
 
 module Koi.Parser
-  ( readProgram
+  ( parseProgram
   ) where
 
-import Control.Monad
+import Control.Monad.State
 import Data.Array.IArray
 import Data.Functor
-import Data.List
+import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
-import Koi.Lexer
+import Data.Set (Set)
+import qualified Data.Set as S
+import Data.Void
 import Koi.Program
-import Numeric
-import Text.Parsec
-import Text.Parsec.String
+import Text.Megaparsec hiding (State, label)
+import Text.Megaparsec.Char
+import qualified Text.Megaparsec.Char.Lexer as L
 
-readProgram :: String -> IO (Either ParseError Program)
-readProgram file = parseFromFile parseProgram file
+data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map String Expr, labels :: Set String, inPrelude :: Bool }
 
-parseProgram :: Parser Program
-parseProgram = do
-  toks <- lexer
-  case runParser program (ParserState { size = Nothing, definitions = M.empty, inPrelude = True }) "" toks of
-    Right result -> pure result
-    Left err -> fail $ show err
+defaultState :: ParserState
+defaultState = ParserState { size = Nothing, definitions = M.empty, labels = S.empty, inPrelude = True }
 
-data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map String Expr, inPrelude :: Bool }
+type Parser = ParsecT Void String (State ParserState)
 
-program :: Parsec [Token] ParserState Program
+parseProgram :: String -> String -> Either (ParseErrorBundle String Void) Program
+parseProgram fileName code = evalState (runParserT program fileName code) defaultState
+
+program :: Parser Program
 program = do
-  statements <- catMaybes <$> endBy statement (symbolToken Semicolon)
-  eof
-  s <- size <$> getState
-  case buildLabels (fst <$> statements) of
-    Right m -> pure Program { programSize = fromMaybe (256, 256) s, programLabels = m, programCode = listToArray (snd <$> statements) }
-    Left (p, l) -> do
-      fail $ l ++ " is already defined"
+  skipSpace
+  statements <- catMaybes <$> many (statement <* symbol ";")
+  eof <|> void statement -- The statement should never be parsed, but it improves the error message
+  s <- get
+  pure Program { programSize = fromMaybe (256, 256) $ size s, programLabels = M.fromList . makeLabels $ fst <$> statements, programCode = listToArray (snd <$> statements) }
 
-buildLabels :: [Maybe (SourcePos, String)] -> Either (SourcePos, String) (Map String Int)
-buildLabels = buildLabelsImpl 0 M.empty
+makeLabels :: [Maybe String] -> [(String, Int)]
+makeLabels ls = catMaybes . map (\(s, i) -> (, i) <$> s) $ zip ls [0..]
 
-buildLabelsImpl :: Int -> Map String Int -> [Maybe (SourcePos, String)] -> Either (SourcePos, String) (Map String Int)
-buildLabelsImpl _ m [] = Right m
-buildLabelsImpl x m (Nothing : cs) = buildLabelsImpl (x + 1) m cs
-buildLabelsImpl x m (Just (p, l) : cs) =
-  if M.member l m then
-    Left (p, l)
-  else
-    buildLabelsImpl (x + 1) (M.insert l x m) cs
+statement :: Parser (Maybe (Maybe String, Command))
+statement = Nothing <$ pragma <|> Just <$> labeledCommand
 
-statement :: Parsec [Token] ParserState (Maybe (Maybe (SourcePos, String), Command))
-statement = Nothing <$ pragma <|> Just <$> command
+pragma :: Parser ()
+pragma = sizePragma <|> definePragma
 
-pragma :: Parsec [Token] ParserState ()
-pragma = sizePragma <|> definitionPragma
-
-sizePragma :: Parsec [Token] ParserState ()
+sizePragma :: Parser ()
 sizePragma = do
-  wordToken "_size"
-  width <- numberToken
-  height <- numberToken
-  state <- getState
-  if not (inPrelude state) then
-    fail "_size must be specified before the first command in the file"
-  else if isJust (size state) then
-    fail "_size cannot be specified more than once"
-  else
-    void . putState $ state { size = Just (width, height) }
+  pos <- getOffset
+  word "_size"
+  s <- get
+  if not $ inPrelude s then
+    failAt pos "_size must be specified before the first command"
+  else if isJust $ size s then
+    failAt pos "_size can only be specified once"
+  else do
+    width <- number
+    height <- number
+    put s { size = Just (width, height) }
 
-definitionPragma :: Parsec [Token] ParserState ()
-definitionPragma = do
-  wordToken "_define"
-  name <- identifierToken
-  val <- expr
-  s <- getState
+definePragma :: Parser ()
+definePragma = do
+  word "_define"
+  pos <- getOffset
+  name <- identifier
+  s <- get
   if M.member name (definitions s) then
-    fail $ name ++ " is already defined"
-  else
-    putState $ s { definitions = M.insert name val (definitions s) }
+    failAt pos $ name ++ " is already defined"
+  else do
+    val <- expr
+    put $ s { definitions = M.insert name val $ definitions s }
 
-command :: Parsec [Token] ParserState (Maybe (SourcePos, String), Command)
-command = do
-  p <- getPosition
-  l <- optionMaybe lbl
-  c <- commandBody
-  s <- getState
-  putState $ s { inPrelude = False }
-  pure ((p,) <$> l, c)
+labeledCommand :: Parser (Maybe String, Command)
+labeledCommand = do
+  lbl <- optional label
+  cmd <- command
+  s <- get
+  put s { inPrelude = False }
+  pure (lbl, cmd)
 
-lbl :: Parsec [Token] ParserState String
-lbl = do
-  symbolToken Colon
-  identifierToken
+label :: Parser String
+label = do
+  symbol ":"
+  pos <- getOffset
+  name <- identifier
+  s <- get
+  if S.member name $ labels s then
+    failAt pos $ name ++ " is already defined"
+  else do
+    put s { labels = S.insert name $ labels s }
+    pure name
 
-commandBody :: Parsec [Token] ParserState Command
-commandBody = gotoCommand <|> passCommand <|> playCommand "black" PlayBlack <|> playCommand "white" PlayWhite <|> ifCommand <|> tableCommand <|> copyCommand
+command :: Parser Command
+command = gotoCommand <|> passCommand <|> playCommand "black" PlayBlack <|> playCommand "white" PlayWhite <|> ifCommand <|> tableCommand <|> copyCommand
 
-gotoCommand :: Parsec [Token] ParserState Command
+gotoCommand :: Parser Command
 gotoCommand = do
-  wordToken "goto"
-  Goto <$> identifierToken
+  word "goto"
+  Goto <$> identifier
 
-passCommand :: Parsec [Token] ParserState Command
-passCommand = wordToken "pass" $> Pass
+passCommand :: Parser Command
+passCommand = do
+  word "pass"
+  pure Pass
 
-playCommand :: String -> (Pointer -> Command) -> Parsec [Token] ParserState Command
-playCommand player c = do
-  wordToken player
-  ptr <- toPointer <$> value
+playCommand :: String -> (Pointer -> Command) -> Parser Command
+playCommand player f = do
+  word player
+  pos <- getOffset
+  ptr <- toPointer <$> expr
   case ptr of
-    Just p -> pure $ c p
-    Nothing -> fail "expected pointer"
+    Just p -> pure $ f p
+    Nothing -> failAt pos "pointer required"
 
-ifCommand :: Parsec [Token] ParserState Command
+ifCommand :: Parser Command
 ifCommand = do
-  wordToken "if"
-  e <- expr
-  l <- identifierToken
-  pure $ If e l
+  word "if"
+  If <$> expr <*> identifier
 
-tableCommand :: Parsec [Token] ParserState Command
+tableCommand :: Parser Command
 tableCommand = do
-  wordToken "table"
-  e <- expr
-  l <- many identifierToken
-  pure $ Table e (listToArray l)
+  word "table"
+  Table <$> expr <*> (listToArray <$> many identifier)
 
-copyCommand :: Parsec [Token] ParserState Command
+copyCommand :: Parser Command
 copyCommand = do
-  wordToken "copy"
-  from <- toPointer <$> value
-  to <- toPointer <$> value
-  case (,) <$> from <*> to of
-    Just (f, t) -> pure $ Copy f t
-    Nothing -> fail "expected pointer"
+  word "copy"
+  posFrom <- getOffset
+  from <- toPointer <$> expr
+  case from of
+    Just f -> do
+      posTo <- getOffset
+      to <- toPointer <$> expr
+      case to of
+        Just t -> pure $ Copy f t
+        Nothing -> failAt posTo "pointer required"
+    Nothing -> failAt posFrom "pointer required"
 
-expr :: Parsec [Token] ParserState Expr
-expr = chainl1 value operator
+expr :: Parser Expr
+expr = do
+  first <- value
+  rest <- many addSubValue
+  pure $ foldl (\e (f, e') -> f e e') first rest
 
-operator :: Parsec [Token] ParserState (Expr -> Expr -> Expr)
-operator = symbolToken Plus $> EAdd <|> symbolToken Minus $> ESub
+addSubValue :: Parser (Expr -> Expr -> Expr, Expr)
+addSubValue = do
+  op <- operator
+  val <- value
+  pure (op, val)
 
-value :: Parsec [Token] ParserState Expr
+value :: Parser Expr
 value = numberValue <|> definitionValue <|> pointerValue
 
-numberValue :: Parsec [Token] ParserState Expr
-numberValue = ELit <$> numberToken
+numberValue :: Parser Expr
+numberValue = ELit <$> number
 
-definitionValue :: Parsec [Token] ParserState Expr
+definitionValue :: Parser Expr
 definitionValue = do
-  name <- identifierToken
-  ParserState _ d _ <- getState
+  pos <- getOffset
+  name <- identifier
+  d <- gets definitions
   case M.lookup name d of
     Just e -> pure e
-    Nothing -> fail $ name ++ " is not defined"
+    Nothing -> failAt pos $ name ++ " is not defined"
 
-pointerValue :: Parsec [Token] ParserState Expr
+pointerValue :: Parser Expr
 pointerValue = EPtr <$> (cellPointer <|> vectorPointer)
 
-cellPointer :: Parsec [Token] ParserState Pointer
+cellPointer :: Parser Pointer
 cellPointer = do
-  symbolToken LBracket
+  symbol "["
   x <- expr
-  symbolToken Comma
+  symbol ","
   y <- expr
-  symbolToken RBracket
+  symbol "]"
   pure $ Pointer (ELit 1) x y (ELit 0) (ELit 0)
 
-vectorPointer :: Parsec [Token] ParserState Pointer
+vectorPointer :: Parser Pointer
 vectorPointer = do
-  symbolToken LAngle
+  symbol "<"
   b <- expr
-  symbolToken Comma
+  symbol ","
   x <- expr
-  symbolToken Comma
+  symbol ","
   y <- expr
-  symbolToken Comma
+  symbol ","
   dx <- expr
-  symbolToken Comma
+  symbol ","
   dy <- expr
-  symbolToken RAngle
+  symbol ">"
   pure $ Pointer b x y dx dy
 
-identifierToken :: Parsec [Token] ParserState String
-identifierToken = koiToken ident
-  where
-    ident (Token s Identifier _) = Just s
-    ident _ = Nothing
+operator :: Parser (Expr -> Expr -> Expr)
+operator = symbol "+" $> EAdd <|> symbol "-" $> ESub
 
-wordToken :: String -> Parsec [Token] ParserState ()
-wordToken name = koiToken ident
-  where
-    ident (Token s Identifier _) | s == name = Just ()
-    ident _ = Nothing
+word :: String -> Parser ()
+word s = lexeme $ do
+  pos <- getOffset
+  region (const . TrivialError pos Nothing . S.singleton . Tokens $ NE.fromList s) . try $ do
+    void $ chunk s
+    notFollowedBy identifierChar
 
-symbolToken :: TokenType -> Parsec [Token] ParserState ()
-symbolToken tokType = koiToken symb
-  where
-    symb (Token _ t _) | t == tokType = Just ()
-    symb _ = Nothing
+number :: Parser Int
+number = try $ decimal <|> hexadecimal <|> octal <|> binary
 
-numberToken :: Parsec [Token] ParserState Int
-numberToken = koiToken num
-  where
-    num (Token s Decimal _) = Just . fst . head $ readDec s
-    num (Token ('0':'x':s) Hex _) = Just . fst . head $ readHex s
-    num (Token ('0':'o':s) Octal _) = Just . fst . head $ readOct s
-    num (Token ('0':'b':s) Binary _) = Just . fst . head $ readInt 2 (`elem` "01") (fromJust . (`elemIndex` "01")) s
-    num _ = Nothing
+decimal :: Parser Int
+decimal = try . lexeme $ L.decimal <* notFollowedBy identifierChar
 
-koiToken :: (Token -> Maybe a) -> Parsec [Token] u a
-koiToken = token tokenValue tokenPos
+hexadecimal :: Parser Int
+hexadecimal = lexeme $ do
+  void $ chunk "0x"
+  L.hexadecimal <* notFollowedBy identifierChar
+
+octal :: Parser Int
+octal = lexeme $ do
+  void $ chunk "0o"
+  L.octal <* notFollowedBy identifierChar
+
+binary :: Parser Int
+binary = lexeme $ do
+  void $ chunk "0b"
+  L.binary <* notFollowedBy identifierChar
+
+identifier :: Parser String
+identifier = lexeme $ (:) <$> identifierStartChar <*> many identifierChar
+
+identifierStartChar :: Parser Char
+identifierStartChar = letterChar <|> char '_'
+
+identifierChar :: Parser Char
+identifierChar = alphaNumChar <|> char '_'
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme skipSpace
+
+symbol :: String -> Parser ()
+symbol s = void $ L.symbol skipSpace s
+
+skipSpace :: Parser ()
+skipSpace = L.space space1 (L.skipLineComment "#") empty
+
+failAt :: Int -> String -> Parser a
+failAt pos msg = parseError . FancyError pos . S.singleton $ ErrorFail msg
 
 listToArray :: [a] -> Array Int a
 listToArray xs = listArray (0, length xs - 1) xs

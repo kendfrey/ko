@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: d21a7f3a16532567e57be876ef7990052371d11324255b7a7a3c0218b5a84ecb
+-- hash: bed2f4b1c1037f219dcb79be946af3c42d63044d129c021081acead3d870e5cd
 
 name:           koi
 version:        0.1.0.0
@@ -18,7 +18,6 @@ executable koi
   main-is: Main.hs
   other-modules:
       Koi.Flag
-      Koi.Lexer
       Koi.Parser
       Koi.Program
       Paths_koi
@@ -29,6 +28,6 @@ executable koi
       array
     , base >=4.7 && <5
     , containers
+    , megaparsec
     , mtl
-    , parsec
   default-language: Haskell2010

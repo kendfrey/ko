@@ -31,5 +31,5 @@ executables:
     dependencies:
     - array
     - containers
+    - megaparsec
     - mtl
-    - parsec
