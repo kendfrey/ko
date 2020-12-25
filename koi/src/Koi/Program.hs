@@ -62,4 +62,12 @@ evalExpr (ESub e x) = (-) <$> evalExpr e <*> evalExpr x
 
 toPointer :: Expr -> Maybe Pointer
 toPointer (EPtr p) = Just p
-toPointer _ = Nothing -- TODO pointer arithmetic
+toPointer (EAdd a b) = addPointer <$> toPointer a <*> toPointer b
+toPointer (ESub a b) = subPointer <$> toPointer a <*> toPointer b
+toPointer _ = Nothing
+
+addPointer :: Pointer -> Pointer -> Pointer
+addPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (EAdd ax bx) (EAdd ay by) (EAdd adx bdx) (EAdd ady bdy)
+
+subPointer :: Pointer -> Pointer -> Pointer
+subPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (ESub ax bx) (ESub ay by) (ESub adx bdx) (ESub ady bdy)
