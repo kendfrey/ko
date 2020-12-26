@@ -7,7 +7,7 @@ if line1 continue;
 goto start;
 :continue
 copy [0,0] [0,15];
-table <2, 0, 15, 0, 0>-3 end;
+case <2, 0, 15, 0, 0>-3 end;
 white [1,1]-[1,1];
 :end
 pass;

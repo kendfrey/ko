@@ -38,7 +38,7 @@ data Command
   | PlayBlack Pointer
   | PlayWhite Pointer
   | If Expr String
-  | Table Expr (Array Int String) -- TODO: I think this should be called case
+  | Case Expr (Array Int String)
   | Copy Pointer Pointer
   deriving (Show)
 

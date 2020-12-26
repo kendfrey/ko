@@ -93,7 +93,7 @@ label = do
     pure name
 
 command :: Parser Command
-command = gotoCommand <|> passCommand <|> playCommand "black" PlayBlack <|> playCommand "white" PlayWhite <|> ifCommand <|> tableCommand <|> copyCommand
+command = gotoCommand <|> passCommand <|> playCommand "black" PlayBlack <|> playCommand "white" PlayWhite <|> ifCommand <|> caseCommand <|> copyCommand
 
 gotoCommand :: Parser Command
 gotoCommand = do
@@ -119,10 +119,10 @@ ifCommand = do
   word "if"
   If <$> expr <*> identifier
 
-tableCommand :: Parser Command
-tableCommand = do
-  word "table"
-  Table <$> expr <*> (listToArray <$> many identifier)
+caseCommand :: Parser Command
+caseCommand = do
+  word "case"
+  Case <$> expr <*> (listToArray <$> many identifier)
 
 copyCommand :: Parser Command
 copyCommand = do
