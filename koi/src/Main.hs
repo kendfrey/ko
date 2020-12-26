@@ -1,9 +1,10 @@
 module Main where
 
 import Control.Monad
+import Koi.Board
 --import Koi.Flag
 import Koi.Parser
---import Koi.Program
+import Koi.Program
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -18,8 +19,10 @@ main = do
       let fileName = head inputs
       code <- readFile fileName
       case parseProgram fileName code of
-        Right prog ->
-          print prog
+        Right prog -> do
+          result <- evalProgram prog
+          boardString <- showBoard result
+          putStr boardString
         Left err -> do
           putStr $ errorBundlePretty err
           exitWith (ExitFailure 3)
