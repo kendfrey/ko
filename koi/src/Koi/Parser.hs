@@ -14,6 +14,7 @@ import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Void
+import Koi.Board
 import Koi.Program
 import Text.Megaparsec hiding (State, label)
 import Text.Megaparsec.Char
@@ -93,7 +94,7 @@ label = do
     pure name
 
 command :: Parser Command
-command = gotoCommand <|> passCommand <|> playCommand "black" PlayBlack <|> playCommand "white" PlayWhite <|> ifCommand <|> caseCommand <|> copyCommand
+command = gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> caseCommand <|> copyCommand
 
 gotoCommand :: Parser Command
 gotoCommand = do

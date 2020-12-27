@@ -19,10 +19,15 @@ main = do
       let fileName = head inputs
       code <- readFile fileName
       case parseProgram fileName code of
-        Right prog -> do
-          result <- evalProgram prog
-          boardString <- showBoard result
-          putStr boardString
+        Right program -> do
+          result <- evalProgram program
+          case result of
+            Left err -> do
+              putStrLn err
+              exitWith (ExitFailure 3)
+            Right board -> do
+              boardString <- showBoard board
+              putStr boardString
         Left err -> do
           putStr $ errorBundlePretty err
           exitWith (ExitFailure 3)
