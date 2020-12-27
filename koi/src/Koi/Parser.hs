@@ -109,11 +109,7 @@ passCommand = do
 playCommand :: String -> (Pointer -> Command) -> Parser Command
 playCommand player f = do
   word player
-  pos <- getOffset
-  ptr <- toPointer <$> expr
-  case ptr of
-    Just p -> pure $ f p
-    Nothing -> failAt pos "pointer required"
+  f <$> pointerExpr
 
 ifCommand :: Parser Command
 ifCommand = do
@@ -128,28 +124,13 @@ caseCommand = do
 copyCommand :: Parser Command
 copyCommand = do
   word "copy"
-  posFrom <- getOffset
-  from <- toPointer <$> expr
-  case from of
-    Just f -> do
-      posTo <- getOffset
-      to <- toPointer <$> expr
-      case to of
-        Just t -> pure $ Copy f t
-        Nothing -> failAt posTo "pointer required"
-    Nothing -> failAt posFrom "pointer required"
+  Copy <$> pointerExpr <*> pointerExpr
 
 expr :: Parser Expr
-expr = do
-  first <- value
-  rest <- many addSubValue
-  pure $ foldl (\e (f, e') -> f e e') first rest
+expr = foldl (\e (f, e') -> f e e') <$> value <*> many addSubValue
 
 addSubValue :: Parser (Expr -> Expr -> Expr, Expr)
-addSubValue = do
-  op <- operator
-  val <- value
-  pure (op, val)
+addSubValue = (,) <$> operator <*> value
 
 value :: Parser Expr
 value = numberValue <|> definitionValue <|> pointerValue
@@ -167,7 +148,16 @@ definitionValue = do
     Nothing -> failAt pos $ name ++ " is not defined"
 
 pointerValue :: Parser Expr
-pointerValue = EPtr <$> (cellPointer <|> vectorPointer)
+pointerValue = EPtr <$> pointerExpr
+
+pointerExpr :: Parser Pointer
+pointerExpr = foldl (\p (f, p') -> f p p') <$> pointer <*> many addSubPointer
+
+addSubPointer :: Parser (Pointer -> Pointer -> Pointer, Pointer)
+addSubPointer = (,) <$> pointerOperator <*> pointer
+
+pointer :: Parser Pointer
+pointer = cellPointer <|> vectorPointer <|> definitionPointer
 
 cellPointer :: Parser Pointer
 cellPointer = do
@@ -193,8 +183,27 @@ vectorPointer = do
   symbol ">"
   pure $ Pointer b x y dx dy
 
+definitionPointer :: Parser Pointer
+definitionPointer = do
+  pos <- getOffset
+  name <- identifier
+  d <- gets definitions
+  case M.lookup name d of
+    Just (EPtr p) -> pure p
+    Just _ -> failAt pos $ name ++ " is not a pointer"
+    Nothing -> failAt pos $ name ++ " is not defined"
+
 operator :: Parser (Expr -> Expr -> Expr)
 operator = symbol "+" $> EAdd <|> symbol "-" $> ESub
+
+pointerOperator :: Parser (Pointer -> Pointer -> Pointer)
+pointerOperator = symbol "++" $> addPointer <|> symbol "--" $> subPointer
+
+addPointer :: Pointer -> Pointer -> Pointer
+addPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (EAdd ax bx) (EAdd ay by) (EAdd adx bdx) (EAdd ady bdy)
+
+subPointer :: Pointer -> Pointer -> Pointer
+subPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (ESub ax bx) (ESub ay by) (ESub adx bdx) (ESub ady bdy)
 
 word :: String -> Parser ()
 word s = lexeme $ do

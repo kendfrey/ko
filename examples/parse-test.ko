@@ -8,6 +8,6 @@ goto start;
 :continue
 copy [0,0] [15,0];
 case <2, 15, 0, 0, 1>-1 end;
-white [1,1]-[1,1];
+white [1,1]--[1,1];
 :end
 pass;

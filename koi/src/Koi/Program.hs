@@ -1,4 +1,10 @@
-module Koi.Program where
+module Koi.Program
+  ( Program(..)
+  , Expr(..)
+  , Pointer(..)
+  , Command(..)
+  , evalProgram
+  ) where
 
 import Control.Monad
 import Data.Array.IArray
@@ -151,15 +157,3 @@ evalExpr _ (ELit x) = pure x
 evalExpr board (EPtr (Pointer b x y dx dy)) = join $ readPointer board <$> evalExpr board b <*> evalExpr board x <*> evalExpr board y <*> evalExpr board dx <*> evalExpr board dy
 evalExpr board (EAdd x y) = (+) <$> evalExpr board x <*> evalExpr board y
 evalExpr board (ESub x y) = (-) <$> evalExpr board x <*> evalExpr board y
-
-toPointer :: Expr -> Maybe Pointer
-toPointer (EPtr p) = Just p
-toPointer (EAdd a b) = addPointer <$> toPointer a <*> toPointer b
-toPointer (ESub a b) = subPointer <$> toPointer a <*> toPointer b
-toPointer _ = Nothing
-
-addPointer :: Pointer -> Pointer -> Pointer
-addPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (EAdd ax bx) (EAdd ay by) (EAdd adx bdx) (EAdd ady bdy)
-
-subPointer :: Pointer -> Pointer -> Pointer
-subPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (ESub ax bx) (ESub ay by) (ESub adx bdx) (ESub ady bdy)
