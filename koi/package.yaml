@@ -30,6 +30,8 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - array
+    - bytestring
     - containers
     - megaparsec
     - mtl
+    - text

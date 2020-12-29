@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Koi.Board
   ( Board
   , BoardPos(..)
@@ -12,6 +14,7 @@ import Control.Monad
 import Data.Array.IO
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Text (Text, pack)
 
 data Player = Black | White
   deriving (Eq, Show)
@@ -38,10 +41,10 @@ safeReadBoard board pos = do
   else
     pure Nothing
 
-showBoard :: Board -> IO String
+showBoard :: Board -> IO Text
 showBoard board = do
-  (_, ub) <- getBounds board
-  showBoardImpl board ub (0, 0)
+  (lb, ub) <- getBounds board
+  pack <$> showBoardImpl board ub lb
 
 showBoardImpl :: Board -> (Int, Int) -> (Int, Int) -> IO String
 showBoardImpl board ub@(ubx, uby) (x, y) =
@@ -58,7 +61,7 @@ stoneChar Empty = '.'
 stoneChar (Stone Black) = 'X'
 stoneChar (Stone White) = 'O'
 
-playStone :: Board -> (Int, Int) -> Player -> IO (Maybe String)
+playStone :: Board -> (Int, Int) -> Player -> IO (Maybe Text)
 playStone board pos player = do
   stone <- readBoard board pos
   case stone of

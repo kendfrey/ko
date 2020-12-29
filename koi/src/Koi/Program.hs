@@ -11,11 +11,12 @@ import Data.Array.IArray
 import Data.Either
 import Data.Map (Map)
 import qualified Data.Map as M
+import Data.Text (Text)
 import Koi.Board
 
 data Program = Program
   { programSize :: (Int, Int)
-  , programLabels :: Map String Int
+  , programLabels :: Map Text Int
   , programCode :: Array Int Command
   }
   deriving (Show)
@@ -37,11 +38,11 @@ data Pointer = Pointer
   deriving (Show)
 
 data Command
-  = Goto String
+  = Goto Text
   | Pass
   | Play Player Pointer
-  | If Expr String
-  | Case Expr (Array Int String)
+  | If Expr Text
+  | Case Expr (Array Int Text)
   | Copy Pointer Pointer
   deriving (Show)
 
@@ -49,13 +50,13 @@ data ProgramState = ProgramState { stateProgram :: Program, stateBoard :: Board,
 
 type ProgramResult = Board
 
-evalProgram :: Program -> IO (Either String ProgramResult)
+evalProgram :: Program -> IO (Either Text ProgramResult)
 evalProgram program = do
   board <- newBoard $ programSize program
   endState <- runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
   pure $ stateBoard <$> endState
 
-runProgram :: ProgramState -> IO (Either String ProgramState)
+runProgram :: ProgramState -> IO (Either Text ProgramState)
 runProgram state = do
   newState <- stepProgram state
   if either (const True) stateHalted newState then
@@ -63,10 +64,10 @@ runProgram state = do
   else
     runProgram $ fromRight undefined newState
 
-stepProgram :: ProgramState -> IO (Either String ProgramState)
+stepProgram :: ProgramState -> IO (Either Text ProgramState)
 stepProgram state = runCommand state $ (programCode . stateProgram $ state) ! statePc state
 
-runCommand :: ProgramState -> Command -> IO (Either String ProgramState)
+runCommand :: ProgramState -> Command -> IO (Either Text ProgramState)
 
 runCommand state (Goto label) = pure . Right $ jumpState state label
 
@@ -115,13 +116,13 @@ runCommand state (Copy (Pointer fbe fxe fye fdxe fdye) (Pointer tbe txe tye tdxe
     Nothing -> pure . Right $ stepState state
     Just err -> pure $ Left err
 
-jumpState :: ProgramState -> String  -> ProgramState
+jumpState :: ProgramState -> Text -> ProgramState
 jumpState state label = state { statePc = (programLabels $ stateProgram state) M.! label }
 
 stepState :: ProgramState -> ProgramState
 stepState state = state { statePc = statePc state + 1 }
 
-playPointer :: Board -> Player -> Int -> Int -> Int -> Int -> Int -> IO (Maybe String)
+playPointer :: Board -> Player -> Int -> Int -> Int -> Int -> Int -> IO (Maybe Text)
 playPointer _ _ b _ _ _ _ | b <= 0 = pure Nothing
 playPointer board player b x y dx dy = do
   result <- playStone board (x, y) player
@@ -129,7 +130,7 @@ playPointer board player b x y dx dy = do
     Nothing -> playPointer board player (b - 1) (x + dx) (y + dy) dx dy
     Just err -> pure $ Just err
 
-copyPointer :: Board -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO (Maybe String)
+copyPointer :: Board -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO (Maybe Text)
 copyPointer _ b _ _ _ _ _ _ _ _ | b <= 0 = pure Nothing
 copyPointer board b fx fy fdx fdy tx ty tdx tdy = do
   stone <- readBoard board (fx, fy)

@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedStrings, TupleSections #-}
 
 module Koi.Parser
   ( parseProgram
@@ -13,6 +13,7 @@ import qualified Data.Map as M
 import Data.Maybe
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Text (Text, pack, unpack)
 import Data.Void
 import Koi.Board
 import Koi.Program
@@ -20,14 +21,14 @@ import Text.Megaparsec hiding (State, label)
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
-data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map String Expr, labels :: Set String, inPrelude :: Bool }
+data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map Text Expr, labels :: Set Text, inPrelude :: Bool }
 
 defaultState :: ParserState
 defaultState = ParserState { size = Nothing, definitions = M.empty, labels = S.empty, inPrelude = True }
 
-type Parser = ParsecT Void String (State ParserState)
+type Parser = ParsecT Void Text (State ParserState)
 
-parseProgram :: String -> String -> Either (ParseErrorBundle String Void) Program
+parseProgram :: String -> Text -> Either (ParseErrorBundle Text Void) Program
 parseProgram fileName code = evalState (runParserT program fileName code) defaultState
 
 program :: Parser Program
@@ -38,10 +39,10 @@ program = do
   s <- get
   pure Program { programSize = fromMaybe (256, 256) $ size s, programLabels = M.fromList . makeLabels $ fst <$> statements, programCode = listToArray (snd <$> statements) }
 
-makeLabels :: [Maybe String] -> [(String, Int)]
+makeLabels :: [Maybe Text] -> [(Text, Int)]
 makeLabels ls = catMaybes . map (\(s, i) -> (, i) <$> s) $ zip ls [0..]
 
-statement :: Parser (Maybe (Maybe String, Command))
+statement :: Parser (Maybe (Maybe Text, Command))
 statement = Nothing <$ pragma <|> Just <$> labeledCommand
 
 pragma :: Parser ()
@@ -68,12 +69,12 @@ definePragma = do
   name <- identifier
   s <- get
   if M.member name (definitions s) then
-    failAt pos $ name ++ " is already defined"
+    failAt pos $ unpack name ++ " is already defined"
   else do
     val <- expr
     put $ s { definitions = M.insert name val $ definitions s }
 
-labeledCommand :: Parser (Maybe String, Command)
+labeledCommand :: Parser (Maybe Text, Command)
 labeledCommand = do
   lbl <- optional label
   cmd <- command
@@ -81,14 +82,14 @@ labeledCommand = do
   put s { inPrelude = False }
   pure (lbl, cmd)
 
-label :: Parser String
+label :: Parser Text
 label = do
   symbol ":"
   pos <- getOffset
   name <- identifier
   s <- get
   if S.member name $ labels s then
-    failAt pos $ name ++ " is already defined"
+    failAt pos $ unpack name ++ " is already defined"
   else do
     put s { labels = S.insert name $ labels s }
     pure name
@@ -106,7 +107,7 @@ passCommand = do
   word "pass"
   pure Pass
 
-playCommand :: String -> (Pointer -> Command) -> Parser Command
+playCommand :: Text -> (Pointer -> Command) -> Parser Command
 playCommand player f = do
   word player
   f <$> pointerExpr
@@ -145,7 +146,7 @@ definitionValue = do
   d <- gets definitions
   case M.lookup name d of
     Just e -> pure e
-    Nothing -> failAt pos $ name ++ " is not defined"
+    Nothing -> failAt pos $ unpack name ++ " is not defined"
 
 pointerValue :: Parser Expr
 pointerValue = EPtr <$> pointerExpr
@@ -190,8 +191,8 @@ definitionPointer = do
   d <- gets definitions
   case M.lookup name d of
     Just (EPtr p) -> pure p
-    Just _ -> failAt pos $ name ++ " is not a pointer"
-    Nothing -> failAt pos $ name ++ " is not defined"
+    Just _ -> failAt pos $ unpack name ++ " is not a pointer"
+    Nothing -> failAt pos $ unpack name ++ " is not defined"
 
 operator :: Parser (Expr -> Expr -> Expr)
 operator = symbol "+" $> EAdd <|> symbol "-" $> ESub
@@ -205,10 +206,10 @@ addPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (EA
 subPointer :: Pointer -> Pointer -> Pointer
 subPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (ESub ax bx) (ESub ay by) (ESub adx bdx) (ESub ady bdy)
 
-word :: String -> Parser ()
+word :: Text -> Parser ()
 word s = lexeme $ do
   pos <- getOffset
-  region (const . TrivialError pos Nothing . S.singleton . Tokens $ NE.fromList s) . try $ do
+  region (const . TrivialError pos Nothing . S.singleton . Tokens . NE.fromList . unpack $ s) . try $ do
     void $ chunk s
     notFollowedBy identifierChar
 
@@ -233,8 +234,8 @@ binary = lexeme $ do
   void $ chunk "0b"
   L.binary <* notFollowedBy identifierChar
 
-identifier :: Parser String
-identifier = lexeme $ (:) <$> identifierStartChar <*> many identifierChar
+identifier :: Parser Text
+identifier = lexeme $ pack <$> ((:) <$> identifierStartChar <*> many identifierChar)
 
 identifierStartChar :: Parser Char
 identifierStartChar = letterChar <|> char '_'
@@ -245,7 +246,7 @@ identifierChar = alphaNumChar <|> char '_'
 lexeme :: Parser a -> Parser a
 lexeme = L.lexeme skipSpace
 
-symbol :: String -> Parser ()
+symbol :: Text -> Parser ()
 symbol s = void $ L.symbol skipSpace s
 
 skipSpace :: Parser ()
