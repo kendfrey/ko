@@ -11,6 +11,7 @@ module Koi.Board
   ) where
 
 import Control.Monad
+import Control.Monad.Except
 import Data.Array.IO
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -24,29 +25,40 @@ data BoardPos = Empty | Stone Player
 
 type Board = IOArray (Int, Int) BoardPos
 
-newBoard :: (Int, Int) -> IO Board
-newBoard (w, h) = newArray ((0, 0), (w - 1, h - 1)) Empty
+type ExceptIO = ExceptT Text IO
 
-readBoard :: Board -> (Int, Int) -> IO BoardPos
-readBoard = readArray
+newBoard :: (Int, Int) -> ExceptIO Board
+newBoard (w, h) = liftIO $ newArray ((0, 0), (w - 1, h - 1)) Empty
 
-writeBoard :: Board -> (Int, Int) -> BoardPos -> IO ()
-writeBoard = writeArray
-
-safeReadBoard :: Board -> (Int, Int) -> IO (Maybe BoardPos)
+safeReadBoard :: Board -> (Int, Int) -> ExceptIO (Maybe BoardPos)
 safeReadBoard board pos = do
-  bounds <- getBounds board
+  bounds <- liftIO $ getBounds board
   if inRange bounds pos then
-    Just <$> readBoard board pos
+    liftIO $ Just <$> readArray board pos
   else
     pure Nothing
 
-showBoard :: Board -> IO Text
-showBoard board = do
-  (lb, ub) <- getBounds board
-  pack <$> showBoardImpl board ub lb
+readBoard :: Board -> (Int, Int) -> ExceptIO BoardPos
+readBoard board pos = do
+  stone <- safeReadBoard board pos
+  case stone of
+    Just s -> pure s
+    Nothing -> throwError "This move is outside the board."
 
-showBoardImpl :: Board -> (Int, Int) -> (Int, Int) -> IO String
+writeBoard :: Board -> (Int, Int) -> BoardPos -> ExceptIO ()
+writeBoard board pos stone = do
+  bounds <- liftIO $ getBounds board
+  if inRange bounds pos then
+    liftIO $ writeArray board pos stone
+  else
+    throwError "This move is outside the board."
+
+showBoard :: Board -> ExceptIO Text
+showBoard board = do
+  (_, ub) <- liftIO $ getBounds board
+  pack <$> showBoardImpl board ub (0, 0)
+
+showBoardImpl :: Board -> (Int, Int) -> (Int, Int) -> ExceptIO String
 showBoardImpl board ub@(ubx, uby) (x, y) =
   if y > uby then
     pure ""
@@ -61,44 +73,43 @@ stoneChar Empty = '.'
 stoneChar (Stone Black) = 'X'
 stoneChar (Stone White) = 'O'
 
-playStone :: Board -> (Int, Int) -> Player -> IO (Maybe Text)
+playStone :: Board -> (Int, Int) -> Player -> ExceptIO ()
 playStone board pos player = do
   stone <- readBoard board pos
   case stone of
-    Stone player' | player' == player -> pure Nothing -- If the stone already exists, do nothing
-                  | otherwise -> pure $ Just "This move is already occupied." -- If the other player's stone is there, error.
+    Stone player' | player' == player -> pure () -- If the stone already exists, do nothing
+                  | otherwise -> throwError "This move is already occupied." -- If the other player's stone is there, error.
     Empty -> do
       let adj = adjacent pos
       opponentStones <- filterM (isOpponent board player) adj
       deadOpponentStones <- filterM (isCapturable board pos) opponentStones
       isSuicide <- not <$> searchLiberty board player (S.singleton pos) (S.fromList adj)
       if isSuicide && null deadOpponentStones then
-        pure $ Just "This move is suicide."
+        throwError "This move is suicide."
       else do
         mapM_ (killGroupFrom board) deadOpponentStones
         writeBoard board pos $ Stone player
-        pure Nothing
 
-isOpponent :: Board -> Player -> (Int, Int) -> IO Bool
+isOpponent :: Board -> Player -> (Int, Int) -> ExceptIO Bool
 isOpponent board player pos = do
   stone <- safeReadBoard board pos
   case stone of
     Just (Stone player') | player' /= player -> pure True
     _ -> pure False
 
-isCapturable :: Board -> (Int, Int) -> (Int, Int) -> IO Bool
+isCapturable :: Board -> (Int, Int) -> (Int, Int) -> ExceptIO Bool
 isCapturable board capturingStone pos = do
   Stone player <- readBoard board pos
   not <$> searchLiberty board player (S.singleton capturingStone) (S.singleton pos)
 
 -- checked: the set of all positions that are known not to lead to a liberty
 -- unchecked: the set of all positions that may lead to a liberty
-searchLiberty :: Board -> Player -> Set (Int, Int) -> Set (Int, Int) -> IO Bool
-searchLiberty board player checked unchecked = do
+searchLiberty :: Board -> Player -> Set (Int, Int) -> Set (Int, Int) -> ExceptIO Bool
+searchLiberty board player checked unchecked =
   case S.minView unchecked of -- Pop the next position to search
     Nothing -> pure False -- If there is nothing left to search, there are no liberties
     Just (pos, unchecked') -> do -- If there is a position to search
-      bounds <- getBounds board
+      bounds <- liftIO $ getBounds board
       if S.member pos checked || not (inRange bounds pos) then -- If this has already been checked or is outside the board
         searchLiberty board player checked unchecked' -- It's not a liberty so keep searching
       else do
@@ -111,12 +122,12 @@ searchLiberty board player checked unchecked = do
           -- If it's the other player, it's not a liberty so consider it checked and keep searching
           _ -> searchLiberty board player (S.insert pos checked) unchecked'
 
-killGroupFrom :: Board -> (Int, Int) -> IO ()
+killGroupFrom :: Board -> (Int, Int) -> ExceptIO ()
 killGroupFrom board pos = do
   Stone player <- readBoard board pos
   killGroup board player pos
 
-killGroup :: Board -> Player -> (Int, Int) -> IO ()
+killGroup :: Board -> Player -> (Int, Int) -> ExceptIO ()
 killGroup board player pos = do
   stone <- safeReadBoard board pos
   case stone of

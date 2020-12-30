@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Koi.Program
   ( Program(..)
   , Expr(..)
@@ -7,8 +9,8 @@ module Koi.Program
   ) where
 
 import Control.Monad
+import Control.Monad.Except
 import Data.Array.IArray
-import Data.Either
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Text (Text)
@@ -50,28 +52,29 @@ data ProgramState = ProgramState { stateProgram :: Program, stateBoard :: Board,
 
 type ProgramResult = Board
 
-evalProgram :: Program -> IO (Either Text ProgramResult)
+type ExceptIO = ExceptT Text IO
+
+evalProgram :: Program -> ExceptIO ProgramResult
 evalProgram program = do
   board <- newBoard $ programSize program
-  endState <- runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
-  pure $ stateBoard <$> endState
+  stateBoard <$> runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
 
-runProgram :: ProgramState -> IO (Either Text ProgramState)
+runProgram :: ProgramState -> ExceptIO ProgramState
 runProgram state = do
   newState <- stepProgram state
-  if either (const True) stateHalted newState then
+  if stateHalted newState then
     pure newState
   else
-    runProgram $ fromRight undefined newState
+    runProgram newState
 
-stepProgram :: ProgramState -> IO (Either Text ProgramState)
+stepProgram :: ProgramState -> ExceptIO ProgramState
 stepProgram state = runCommand state $ (programCode . stateProgram $ state) ! statePc state
 
-runCommand :: ProgramState -> Command -> IO (Either Text ProgramState)
+runCommand :: ProgramState -> Command -> ExceptIO ProgramState
 
-runCommand state (Goto label) = pure . Right $ jumpState state label
+runCommand state (Goto label) = jumpState state label
 
-runCommand state Pass = pure . Right $ state { stateHalted = True }
+runCommand state Pass = pure state { stateHalted = True }
 
 runCommand state (Play player (Pointer be xe ye dxe dye)) = do
   let board = stateBoard state
@@ -80,24 +83,22 @@ runCommand state (Play player (Pointer be xe ye dxe dye)) = do
   y <- evalExpr board ye
   dx <- evalExpr board dxe
   dy <- evalExpr board dye
-  result <- playPointer board player b x y dx dy
-  case result of
-    Nothing -> pure . Right $ stepState state
-    Just err -> pure $ Left err
+  playPointer board player b x y dx dy
+  stepState state
 
 runCommand state (If expr label) = do
   value <- evalExpr (stateBoard state) expr
   if value /= 0 then
-    pure . Right $ jumpState state label
+    jumpState state label
   else
-    pure . Right $ stepState state
+    stepState state
 
 runCommand state (Case expr labels) = do
   value <- evalExpr (stateBoard state) expr
-  if inRange (bounds labels) value then do
-    pure . Right . jumpState state $ labels ! value
+  if inRange (bounds labels) value then
+    jumpState state $ labels ! value
   else
-    pure . Right $ stepState state
+    stepState state
 
 runCommand state (Copy (Pointer fbe fxe fye fdxe fdye) (Pointer tbe txe tye tdxe tdye)) = do
   let board = stateBoard state
@@ -111,49 +112,42 @@ runCommand state (Copy (Pointer fbe fxe fye fdxe fdye) (Pointer tbe txe tye tdxe
   ty <- evalExpr board tye
   tdx <- evalExpr board tdxe
   tdy <- evalExpr board tdye
-  result <- copyPointer board (min fb tb) fx fy fdx fdy tx ty tdx tdy
-  case result of
-    Nothing -> pure . Right $ stepState state
-    Just err -> pure $ Left err
+  copyPointer board (min fb tb) fx fy fdx fdy tx ty tdx tdy
+  stepState state
 
-jumpState :: ProgramState -> Text -> ProgramState
-jumpState state label = state { statePc = (programLabels $ stateProgram state) M.! label }
+jumpState :: ProgramState -> Text -> ExceptIO ProgramState
+jumpState state label = pure state { statePc = (programLabels $ stateProgram state) M.! label } -- TODO error msg
 
-stepState :: ProgramState -> ProgramState
-stepState state = state { statePc = statePc state + 1 }
+stepState :: ProgramState -> ExceptIO ProgramState
+stepState state = pure state { statePc = statePc state + 1 }
 
-playPointer :: Board -> Player -> Int -> Int -> Int -> Int -> Int -> IO (Maybe Text)
-playPointer _ _ b _ _ _ _ | b <= 0 = pure Nothing
+playPointer :: Board -> Player -> Int -> Int -> Int -> Int -> Int -> ExceptIO ()
+playPointer _ _ b _ _ _ _ | b <= 0 = pure ()
 playPointer board player b x y dx dy = do
-  result <- playStone board (x, y) player
-  case result of
-    Nothing -> playPointer board player (b - 1) (x + dx) (y + dy) dx dy
-    Just err -> pure $ Just err
+  playStone board (x, y) player
+  playPointer board player (b - 1) (x + dx) (y + dy) dx dy
 
-copyPointer :: Board -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> IO (Maybe Text)
-copyPointer _ b _ _ _ _ _ _ _ _ | b <= 0 = pure Nothing
+copyPointer :: Board -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> ExceptIO ()
+copyPointer _ b _ _ _ _ _ _ _ _ | b <= 0 = pure ()
 copyPointer board b fx fy fdx fdy tx ty tdx tdy = do
   stone <- readBoard board (fx, fy)
-  result <-
-    case stone of
-      Stone player -> playStone board (tx, ty) player
-      Empty -> pure Nothing
-  case result of
-    Nothing -> copyPointer board (b - 1) (fx + fdx) (fy + fdy) fdx fdy (tx + tdx) (ty + tdy) tdx tdy
-    Just err -> pure $ Just err
+  case stone of
+    Stone player -> playStone board (tx, ty) player
+    Empty -> pure ()
+  copyPointer board (b - 1) (fx + fdx) (fy + fdy) fdx fdy (tx + tdx) (ty + tdy) tdx tdy
 
 toBit :: BoardPos -> Int
 toBit Empty = 0
 toBit _ = 1
 
-readPointer :: Board -> Int -> Int -> Int -> Int -> Int -> IO Int
+readPointer :: Board -> Int -> Int -> Int -> Int -> Int -> ExceptIO Int
 readPointer _ b _ _ _ _ | b <= 0 = pure 0
 readPointer board b x y dx dy = do
   bit <- readBoard board (x, y)
   rest <- readPointer board (b - 1) (x + dx) (y + dy) dx dy
-  pure (rest * 2 + toBit bit)
+  pure $ rest * 2 + toBit bit
 
-evalExpr :: Board -> Expr -> IO Int
+evalExpr :: Board -> Expr -> ExceptIO Int
 evalExpr _ (ELit x) = pure x
 evalExpr board (EPtr (Pointer b x y dx dy)) = join $ readPointer board <$> evalExpr board b <*> evalExpr board x <*> evalExpr board y <*> evalExpr board dx <*> evalExpr board dy
 evalExpr board (EAdd x y) = (+) <$> evalExpr board x <*> evalExpr board y

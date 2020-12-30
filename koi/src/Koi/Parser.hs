@@ -43,7 +43,7 @@ makeLabels :: [Maybe Text] -> [(Text, Int)]
 makeLabels ls = catMaybes . map (\(s, i) -> (, i) <$> s) $ zip ls [0..]
 
 statement :: Parser (Maybe (Maybe Text, Command))
-statement = Nothing <$ pragma <|> Just <$> labeledCommand
+statement = Nothing <$ pragma <|> Just <$> labelledCommand
 
 pragma :: Parser ()
 pragma = sizePragma <|> definePragma
@@ -74,8 +74,8 @@ definePragma = do
     val <- expr
     put $ s { definitions = M.insert name val $ definitions s }
 
-labeledCommand :: Parser (Maybe Text, Command)
-labeledCommand = do
+labelledCommand :: Parser (Maybe Text, Command)
+labelledCommand = do
   lbl <- optional label
   cmd <- command
   s <- get

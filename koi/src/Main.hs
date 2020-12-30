@@ -4,6 +4,7 @@ module Main where
 
 import Prelude hiding (putStr, putStrLn)
 import Control.Monad
+import Control.Monad.Except
 import qualified Data.ByteString as B
 import Data.Text (pack)
 import Data.Text.Encoding
@@ -27,14 +28,12 @@ main = do
       code <- decodeUtf8 <$> B.readFile fileName
       case parseProgram fileName code of
         Right program -> do
-          result <- evalProgram program
+          result <- runExceptT $ evalProgram program >>= showBoard
           case result of
             Left err -> do
               putStrLn err
               exitWith (ExitFailure 3)
-            Right board -> do
-              boardString <- showBoard board
-              putStr boardString
+            Right board -> putStr board
         Left err -> do
           putStr . pack $ errorBundlePretty err
           exitWith (ExitFailure 3)
