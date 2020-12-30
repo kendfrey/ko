@@ -68,7 +68,7 @@ runProgram state = do
     runProgram newState
 
 stepProgram :: ProgramState -> ExceptIO ProgramState
-stepProgram state = runCommand state $ (programCode . stateProgram $ state) ! statePc state
+stepProgram state = runCommand state $ (programCode . stateProgram $ state) ! statePc state -- TODO: error when end of program is reached
 
 runCommand :: ProgramState -> Command -> ExceptIO ProgramState
 
