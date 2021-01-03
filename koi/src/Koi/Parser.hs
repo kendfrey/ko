@@ -4,6 +4,7 @@ module Koi.Parser
   ( parseProgram
   ) where
 
+import Control.Monad.Reader
 import Control.Monad.State
 import Data.Array.IArray
 import Data.Functor
@@ -11,7 +12,6 @@ import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe
-import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text, pack, unpack)
 import Data.Void
@@ -21,10 +21,21 @@ import Text.Megaparsec hiding (State, label)
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
-data ParserState = ParserState { size :: Maybe (Int, Int), definitions :: Map Text Expr, labels :: Set Text, inPrelude :: Bool }
+data PExpr
+  = PLit Integer
+  | PDef Text
+  | PPtr PPointer
+  | PAdd ParsedExpr ParsedExpr
+  | PSub ParsedExpr ParsedExpr
+
+data PPointer = PPointer ParsedExpr ParsedExpr ParsedExpr ParsedExpr ParsedExpr
+
+type ParsedExpr = (Int, PExpr)
+
+data ParserState = ParserState { commandIndex :: Integer, size :: Maybe (Integer, Integer), definitions :: Map Text ParsedExpr }
 
 defaultState :: ParserState
-defaultState = ParserState { size = Nothing, definitions = M.empty, labels = S.empty, inPrelude = True }
+defaultState = ParserState { commandIndex = 0, size = Nothing, definitions = M.empty }
 
 type Parser = ParsecT Void Text (State ParserState)
 
@@ -34,142 +45,142 @@ parseProgram fileName code = evalState (runParserT program fileName code) defaul
 program :: Parser Program
 program = do
   skipSpace
-  statements <- catMaybes <$> many (statement <* symbol ";")
+  unresolvedStatements <- catMaybes <$> many statement
   eof <|> void statement -- The statement should never be parsed, but it improves the error message
+  statements <- sequence unresolvedStatements
   s <- get
-  pure Program { programSize = fromMaybe (256, 256) $ size s, programLabels = M.fromList . makeLabels $ fst <$> statements, programCode = listToArray (snd <$> statements) }
+  pure Program { programSize = fromMaybe (256, 256) $ size s, programCode = listToArray statements }
 
-makeLabels :: [Maybe Text] -> [(Text, Int)]
-makeLabels ls = catMaybes . map (\(s, i) -> (, i) <$> s) $ zip ls [0..]
-
-statement :: Parser (Maybe (Maybe Text, Command))
-statement = Nothing <$ pragma <|> Just <$> labelledCommand
+statement :: Parser (Maybe (Parser Command))
+statement = Nothing <$ pragma <|> Just <$> command
 
 pragma :: Parser ()
-pragma = sizePragma <|> definePragma
+pragma = sizePragma <|> definePragma <|> labelPragma
 
 sizePragma :: Parser ()
 sizePragma = do
   pos <- getOffset
   word "_size"
   s <- get
-  if not $ inPrelude s then
-    failAt pos "_size must be specified before the first command"
+  if commandIndex s /= 0 then
+    failAt pos "_size cannot be specified after the first command"
   else if isJust $ size s then
     failAt pos "_size can only be specified once"
-  else do
-    width <- number
-    height <- number
+  else parens $ do
+    width <- positiveNumber
+    symbol ","
+    height <- positiveNumber
     put s { size = Just (width, height) }
 
 definePragma :: Parser ()
 definePragma = do
   word "_define"
-  pos <- getOffset
-  name <- identifier
-  s <- get
-  if M.member name (definitions s) then
-    failAt pos $ unpack name ++ " is already defined"
-  else do
+  parens $ do
+    pos <- getOffset
+    name <- identifier
+    symbol ","
     val <- expr
-    put $ s { definitions = M.insert name val $ definitions s }
+    define name val pos
 
-labelledCommand :: Parser (Maybe Text, Command)
-labelledCommand = do
-  lbl <- optional label
-  cmd <- command
+labelPragma :: Parser ()
+labelPragma = do
+  word "_label"
+  parens $ do
+    pos <- getOffset
+    name <- identifier
+    i <- gets $ (pos, ) . PLit . commandIndex
+    define name i pos
+
+define :: Text -> ParsedExpr -> Int -> Parser ()
+define name val pos = do
   s <- get
-  put s { inPrelude = False }
-  pure (lbl, cmd)
+  if M.member name $ definitions s then
+      failAt pos $ unpack name ++ " is already defined"
+    else
+      put $ s { definitions = M.insert name val $ definitions s }
 
-label :: Parser Text
-label = do
-  symbol ":"
-  pos <- getOffset
-  name <- identifier
+command :: Parser (Parser Command)
+command = do
+  cmd <- gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> copyCommand
   s <- get
-  if S.member name $ labels s then
-    failAt pos $ unpack name ++ " is already defined"
-  else do
-    put s { labels = S.insert name $ labels s }
-    pure name
+  put s { commandIndex = commandIndex s + 1 }
+  pure cmd
 
-command :: Parser Command
-command = gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> caseCommand <|> copyCommand
-
-gotoCommand :: Parser Command
+gotoCommand :: Parser (Parser Command)
 gotoCommand = do
   word "goto"
-  Goto <$> identifier
+  parens $ do
+    location <- pexpr
+    pure $ Goto <$> location
 
-passCommand :: Parser Command
+passCommand :: Parser (Parser Command)
 passCommand = do
   word "pass"
-  pure Pass
+  parens . pure $ pure Pass
 
-playCommand :: Text -> (Pointer -> Command) -> Parser Command
+playCommand :: Text -> (PtrExpr -> Expr -> Command) -> Parser (Parser Command)
 playCommand player f = do
   word player
-  f <$> pointerExpr
+  parens $ do
+    ptr <- pptr
+    val <- fromMaybe (pure $ Lit (-1)) <$> optional (symbol "," *> pexpr)
+    pure $ f <$> ptr <*> val
 
-ifCommand :: Parser Command
+ifCommand :: Parser (Parser Command)
 ifCommand = do
   word "if"
-  If <$> expr <*> identifier
+  parens $ do
+    condition <- pptr
+    symbol ","
+    location <- pexpr
+    pure $ If <$> condition <*> location
 
-caseCommand :: Parser Command
-caseCommand = do
-  word "case"
-  Case <$> expr <*> (listToArray <$> many identifier)
-
-copyCommand :: Parser Command
+copyCommand :: Parser (Parser Command)
 copyCommand = do
   word "copy"
-  Copy <$> pointerExpr <*> pointerExpr
+  parens $ do
+    to <- pptr
+    symbol ","
+    from <- pptr
+    pure $ Copy <$> to <*> from
 
-expr :: Parser Expr
-expr = foldl (\e (f, e') -> f e e') <$> value <*> many addSubValue
+pexpr :: Parser (Parser Expr)
+pexpr = resolveExpr <$> expr
 
-addSubValue :: Parser (Expr -> Expr -> Expr, Expr)
+pptr :: Parser (Parser PtrExpr)
+pptr = resolvePtr <$> expr
+
+expr :: Parser ParsedExpr
+expr = foldl (\e (f, e') -> (fst e, f e e')) <$> value <*> many addSubValue
+
+addSubValue :: Parser (ParsedExpr -> ParsedExpr -> PExpr, ParsedExpr)
 addSubValue = (,) <$> operator <*> value
 
-value :: Parser Expr
-value = numberValue <|> definitionValue <|> pointerValue
+value :: Parser ParsedExpr
+value = (,) <$> getOffset <*> (numberValue <|> definitionValue <|> pointerValue)
 
-numberValue :: Parser Expr
-numberValue = ELit <$> number
+numberValue :: Parser PExpr
+numberValue = PLit <$> number
 
-definitionValue :: Parser Expr
-definitionValue = do
-  pos <- getOffset
-  name <- identifier
-  d <- gets definitions
-  case M.lookup name d of
-    Just e -> pure e
-    Nothing -> failAt pos $ unpack name ++ " is not defined"
+definitionValue :: Parser PExpr
+definitionValue = PDef <$> identifier
 
-pointerValue :: Parser Expr
-pointerValue = EPtr <$> pointerExpr
+pointerValue :: Parser PExpr
+pointerValue = PPtr <$> pointer
 
-pointerExpr :: Parser Pointer
-pointerExpr = foldl (\p (f, p') -> f p p') <$> pointer <*> many addSubPointer
+pointer :: Parser PPointer
+pointer = cellPointer <|> vectorPointer
 
-addSubPointer :: Parser (Pointer -> Pointer -> Pointer, Pointer)
-addSubPointer = (,) <$> pointerOperator <*> pointer
-
-pointer :: Parser Pointer
-pointer = cellPointer <|> vectorPointer <|> definitionPointer
-
-cellPointer :: Parser Pointer
+cellPointer :: Parser PPointer
 cellPointer = do
   symbol "["
   x <- expr
   symbol ","
   y <- expr
   symbol "]"
-  pure $ Pointer (ELit 1) x y (ELit 0) (ELit 0)
+  pure $ PPointer (0, PLit 1) x y (0, PLit 0) (0, PLit 0)
 
-vectorPointer :: Parser Pointer
+vectorPointer :: Parser PPointer
 vectorPointer = do
   symbol "<"
   b <- expr
@@ -182,29 +193,36 @@ vectorPointer = do
   symbol ","
   dy <- expr
   symbol ">"
-  pure $ Pointer b x y dx dy
+  pure $ PPointer b x y dx dy
 
-definitionPointer :: Parser Pointer
-definitionPointer = do
-  pos <- getOffset
-  name <- identifier
-  d <- gets definitions
-  case M.lookup name d of
-    Just (EPtr p) -> pure p
-    Just _ -> failAt pos $ unpack name ++ " is not a pointer"
+operator :: Parser (ParsedExpr -> ParsedExpr -> PExpr)
+operator = symbol "+" $> PAdd <|> symbol "-" $> PSub
+
+resolveExpr :: ParsedExpr -> Parser Expr
+resolveExpr (_, PLit x) = pure $ Lit x
+resolveExpr (pos, PDef name) = resolveExpr =<< resolveName name pos
+resolveExpr p@(_, PPtr _) = Ptr <$> resolvePtr p
+resolveExpr (_, PAdd a b) = Ptr <$> (Add <$> resolvePtr a <*> resolvePtr b)
+resolveExpr (_, PSub a b) = Ptr <$> (Sub <$> resolvePtr a <*> resolvePtr b)
+
+resolvePtr :: ParsedExpr -> Parser PtrExpr
+resolvePtr (pos, PLit _) = failAt pos "Pointer expected"
+resolvePtr (pos, PDef name) = do
+  (_, ptr) <- resolveName name pos
+  resolvePtr (pos, ptr)
+resolvePtr (_, PPtr (PPointer b x y dx dy)) = PtrLit <$> (Pointer <$> resolveExpr b <*> resolveExpr x <*> resolveExpr y <*> resolveExpr dx <*> resolveExpr dy)
+resolvePtr (_, PAdd a b) = Add <$> resolvePtr a <*> resolvePtr b
+resolvePtr (_, PSub a b) = Sub <$> resolvePtr a <*> resolvePtr b
+
+resolveName :: Text -> Int -> Parser ParsedExpr
+resolveName name pos = do
+  defs <- gets definitions
+  case M.lookup name defs of
     Nothing -> failAt pos $ unpack name ++ " is not defined"
+    Just e -> pure e
 
-operator :: Parser (Expr -> Expr -> Expr)
-operator = symbol "+" $> EAdd <|> symbol "-" $> ESub
-
-pointerOperator :: Parser (Pointer -> Pointer -> Pointer)
-pointerOperator = symbol "++" $> addPointer <|> symbol "--" $> subPointer
-
-addPointer :: Pointer -> Pointer -> Pointer
-addPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (EAdd ax bx) (EAdd ay by) (EAdd adx bdx) (EAdd ady bdy)
-
-subPointer :: Pointer -> Pointer -> Pointer
-subPointer (Pointer ab ax ay adx ady) (Pointer _ bx by bdx bdy) = Pointer ab (ESub ax bx) (ESub ay by) (ESub adx bdx) (ESub ady bdy)
+parens :: Parser a -> Parser a
+parens = between (symbol "(") (symbol ")")
 
 word :: Text -> Parser ()
 word s = lexeme $ do
@@ -213,23 +231,28 @@ word s = lexeme $ do
     void $ chunk s
     notFollowedBy identifierChar
 
-number :: Parser Int
-number = try $ decimal <|> hexadecimal <|> octal <|> binary
+number :: Parser Integer
+number = do
+  negative <- isJust <$> optional (symbol "-")
+  (if negative then negate else id) <$> positiveNumber
 
-decimal :: Parser Int
+positiveNumber :: Parser Integer
+positiveNumber = decimal <|> hexadecimal <|> octal <|> binary
+
+decimal :: Parser Integer
 decimal = try . lexeme $ L.decimal <* notFollowedBy identifierChar
 
-hexadecimal :: Parser Int
+hexadecimal :: Parser Integer
 hexadecimal = lexeme $ do
   void $ chunk "0x"
   L.hexadecimal <* notFollowedBy identifierChar
 
-octal :: Parser Int
+octal :: Parser Integer
 octal = lexeme $ do
   void $ chunk "0o"
   L.octal <* notFollowedBy identifierChar
 
-binary :: Parser Int
+binary :: Parser Integer
 binary = lexeme $ do
   void $ chunk "0b"
   L.binary <* notFollowedBy identifierChar
@@ -255,5 +278,5 @@ skipSpace = L.space space1 (L.skipLineComment "#") empty
 failAt :: Int -> String -> Parser a
 failAt pos msg = parseError . FancyError pos . S.singleton $ ErrorFail msg
 
-listToArray :: [a] -> Array Int a
-listToArray xs = listArray (0, length xs - 1) xs
+listToArray :: [a] -> Array Integer a
+listToArray xs = listArray (0, toInteger $ length xs - 1) xs

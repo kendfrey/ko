@@ -1,0 +1,12 @@
+# function add(a, b) { while (b) { c = a & b; a = a | b; a = a & ~c; b = c << 1; } return a; }
+_label(add)
+# TODO: set carry to 0
+black(add_c)
+white(add_c+[0,2], add_a+[0,2])
+white(add_c+[0,2], add_b+[0,2])
+black(add_a, add_b)
+white(add_a+[0,2], add_c)
+white(add_b+[0,2])
+black(add_b+[2,0], add_c) # the "extra" bit of add_b becomes a carry flag
+if(add_b, add)
+goto(add_return)

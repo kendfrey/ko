@@ -1,13 +1,14 @@
-_size 0x10 02; #16x2
-_define line1 <0x0f,0o00,0b0,2+4-0b101,0>; # <16, 0, 0, 1, 0>
+_size(0x10, 02) #16x2
+_define(line1, <0x0f,0o00,0b0,0b001,0>) # <15,0,0,1,0>
+_define(lblptr, <4,5,0,1,0>)
 
-:start
-black [0,0];
-if line1 continue;
-goto start;
-:continue
-copy [0,0] [15,0];
-case <2, 15, 0, 0, 1>-1 end;
-white [1,1]--[1,1];
-:end
-pass;
+black([0,0])
+white(lblptr, _continue)
+if(line1, lblptr)
+white([1,1]-[1,1]) # these two lines would be errors if they were executed
+black([-1,-1])
+_label(_continue)
+white(<2,1,0,0,1>, <2,0,0,0,1>)
+copy(line1+[1,1], line1)
+black([3,0] + [-1,0])
+pass()

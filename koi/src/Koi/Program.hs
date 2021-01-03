@@ -1,154 +1,161 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, TupleSections #-}
 
 module Koi.Program
   ( Program(..)
   , Expr(..)
+  , PtrExpr(..)
   , Pointer(..)
   , Command(..)
   , evalProgram
   ) where
 
-import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Reader
+import Control.Monad.State hiding (state)
 import Data.Array.IArray
-import Data.Map (Map)
-import qualified Data.Map as M
 import Data.Text (Text)
 import Koi.Board
 
 data Program = Program
-  { programSize :: (Int, Int)
-  , programLabels :: Map Text Int
-  , programCode :: Array Int Command
+  { programSize :: (Integer, Integer)
+  , programCode :: Array Integer Command
   }
-  deriving (Show)
 
 data Expr
-  = ELit Int
-  | EPtr Pointer
-  | EAdd Expr Expr
-  | ESub Expr Expr
-  deriving (Show)
+  = Lit Integer
+  | Ptr PtrExpr
 
-data Pointer = Pointer
-  { bits :: Expr
-  , xOrigin :: Expr
-  , yOrigin :: Expr
-  , xStep :: Expr
-  , yStep :: Expr
-  }
-  deriving (Show)
+data PtrExpr
+  = PtrLit Pointer
+  | Add PtrExpr PtrExpr
+  | Sub PtrExpr PtrExpr
+
+data Pointer = Pointer Expr Expr Expr Expr Expr
 
 data Command
-  = Goto Text
+  = Goto Expr
   | Pass
-  | Play Player Pointer
-  | If Expr Text
-  | Case Expr (Array Int Text)
-  | Copy Pointer Pointer
-  deriving (Show)
+  | Play Player PtrExpr Expr
+  | If PtrExpr Expr
+  | Copy PtrExpr PtrExpr
 
-data ProgramState = ProgramState { stateProgram :: Program, stateBoard :: Board, statePc :: Int, stateHalted :: Bool }
+data ProgramState = ProgramState { stateProgram :: Program, stateBoard :: Board, statePc :: Integer, stateHalted :: Bool }
 
 type ProgramResult = Board
 
-type ExceptIO = ExceptT Text IO
+type Run = StateT ProgramState (ExceptT Text IO)
 
-evalProgram :: Program -> ExceptIO ProgramResult
+evalProgram :: Program -> ExceptT Text IO ProgramResult
 evalProgram program = do
-  board <- newBoard $ programSize program
-  stateBoard <$> runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
+  board <- liftIO . newBoard $ programSize program
+  stateBoard <$> execStateT runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
 
-runProgram :: ProgramState -> ExceptIO ProgramState
-runProgram state = do
-  newState <- stepProgram state
-  if stateHalted newState then
-    pure newState
+runProgram :: Run ()
+runProgram = do
+  stepProgram
+  halted <- gets stateHalted
+  if halted then
+    pure ()
   else
-    runProgram newState
+    runProgram
 
-stepProgram :: ProgramState -> ExceptIO ProgramState
-stepProgram state = runCommand state $ (programCode . stateProgram $ state) ! statePc state -- TODO: error when end of program is reached
+stepProgram :: Run ()
+stepProgram = do
+  state <- get
+  case programCode (stateProgram state) !? statePc state of
+    Just cmd -> runCommand cmd -- TODO: include command information in error messages
+    Nothing -> throwError "Execution moved outside the code." -- TODO: this can be checked in jumpState and will improve the error message
 
-runCommand :: ProgramState -> Command -> ExceptIO ProgramState
+runCommand :: Command -> Run ()
 
-runCommand state (Goto label) = jumpState state label
+runCommand (Goto pos) = jumpState =<< evalExpr' pos
 
-runCommand state Pass = pure state { stateHalted = True }
+runCommand Pass = do
+  state <- get
+  put state { stateHalted = True }
 
-runCommand state (Play player (Pointer be xe ye dxe dye)) = do
-  let board = stateBoard state
-  b <- evalExpr board be
-  x <- evalExpr board xe
-  y <- evalExpr board ye
-  dx <- evalExpr board dxe
-  dy <- evalExpr board dye
-  playPointer board player b x y dx dy
-  stepState state
+runCommand (Play player ptr expr) = do
+  (b, x, y, dx, dy) <- evalPtr' ptr
+  val <- evalExpr' expr
+  withBoard $ playPointer player val b x y dx dy
+  stepState
 
-runCommand state (If expr label) = do
-  value <- evalExpr (stateBoard state) expr
+runCommand (If ptr pos) = do
+  value <- evalExpr' $ Ptr ptr
   if value /= 0 then
-    jumpState state label
+    jumpState =<< evalExpr' pos
   else
-    stepState state
+    stepState
 
-runCommand state (Case expr labels) = do
-  value <- evalExpr (stateBoard state) expr
-  if inRange (bounds labels) value then
-    jumpState state $ labels ! value
-  else
-    stepState state
+runCommand (Copy to from) = do
+  (tb, tx, ty, tdx, tdy) <- evalPtr' to
+  (fb, fx, fy, fdx, fdy) <- evalPtr' from
+  withBoard $ copyPointer (min tb fb) tx ty tdx tdy fx fy fdx fdy
+  stepState
 
-runCommand state (Copy (Pointer fbe fxe fye fdxe fdye) (Pointer tbe txe tye tdxe tdye)) = do
-  let board = stateBoard state
-  fb <- evalExpr board fbe
-  fx <- evalExpr board fxe
-  fy <- evalExpr board fye
-  fdx <- evalExpr board fdxe
-  fdy <- evalExpr board fdye
-  tb <- evalExpr board tbe
-  tx <- evalExpr board txe
-  ty <- evalExpr board tye
-  tdx <- evalExpr board tdxe
-  tdy <- evalExpr board tdye
-  copyPointer board (min fb tb) fx fy fdx fdy tx ty tdx tdy
-  stepState state
+jumpState :: Integer -> Run ()
+jumpState pos = do
+  state <- get
+  put state { statePc = pos }
 
-jumpState :: ProgramState -> Text -> ExceptIO ProgramState
-jumpState state label = pure state { statePc = (programLabels $ stateProgram state) M.! label } -- TODO error msg
+stepState :: Run ()
+stepState = do
+  state <- get
+  put state { statePc = statePc state + 1 }
 
-stepState :: ProgramState -> ExceptIO ProgramState
-stepState state = pure state { statePc = statePc state + 1 }
-
-playPointer :: Board -> Player -> Int -> Int -> Int -> Int -> Int -> ExceptIO ()
+playPointer :: Player -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard ()
 playPointer _ _ b _ _ _ _ | b <= 0 = pure ()
-playPointer board player b x y dx dy = do
-  playStone board (x, y) player
-  playPointer board player (b - 1) (x + dx) (y + dy) dx dy
+playPointer player val b x y dx dy = do
+  if odd val then
+    playStone (x, y) player
+  else
+    pure ()
+  playPointer player (val `div` 2) (b - 1) (x + dx) (y + dy) dx dy
 
-copyPointer :: Board -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> ExceptIO ()
-copyPointer _ b _ _ _ _ _ _ _ _ | b <= 0 = pure ()
-copyPointer board b fx fy fdx fdy tx ty tdx tdy = do
-  stone <- readBoard board (fx, fy)
+copyPointer :: Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard ()
+copyPointer b _ _ _ _ _ _ _ _ | b <= 0 = pure ()
+copyPointer b tx ty tdx tdy fx fy fdx fdy = do
+  stone <- readBoard (fx, fy)
   case stone of
-    Stone player -> playStone board (tx, ty) player
+    Stone player -> playStone (tx, ty) player
     Empty -> pure ()
-  copyPointer board (b - 1) (fx + fdx) (fy + fdy) fdx fdy (tx + tdx) (ty + tdy) tdx tdy
+  copyPointer (b - 1) (tx + tdx) (ty + tdy) tdx tdy (fx + fdx) (fy + fdy) fdx fdy
 
-toBit :: BoardPos -> Int
+toBit :: BoardPos -> Integer
 toBit Empty = 0
 toBit _ = 1
 
-readPointer :: Board -> Int -> Int -> Int -> Int -> Int -> ExceptIO Int
-readPointer _ b _ _ _ _ | b <= 0 = pure 0
-readPointer board b x y dx dy = do
-  bit <- readBoard board (x, y)
-  rest <- readPointer board (b - 1) (x + dx) (y + dy) dx dy
+readPointer :: Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard Integer
+readPointer b _ _ _ _ | b <= 0 = pure 0
+readPointer b x y dx dy = do
+  bit <- readBoard (x, y)
+  rest <- readPointer (b - 1) (x + dx) (y + dy) dx dy
   pure $ rest * 2 + toBit bit
 
-evalExpr :: Board -> Expr -> ExceptIO Int
-evalExpr _ (ELit x) = pure x
-evalExpr board (EPtr (Pointer b x y dx dy)) = join $ readPointer board <$> evalExpr board b <*> evalExpr board x <*> evalExpr board y <*> evalExpr board dx <*> evalExpr board dy
-evalExpr board (EAdd x y) = (+) <$> evalExpr board x <*> evalExpr board y
-evalExpr board (ESub x y) = (-) <$> evalExpr board x <*> evalExpr board y
+evalExpr' :: Expr -> Run Integer
+evalExpr' = withBoard . evalExpr
+
+evalExpr :: Expr -> RunBoard Integer
+evalExpr (Lit x) = pure x
+evalExpr (Ptr ptr) = do
+  (b, x, y, dx, dy) <- evalPtr ptr
+  readPointer b x y dx dy
+
+evalPtr' :: PtrExpr -> Run (Integer, Integer, Integer, Integer, Integer)
+evalPtr' = withBoard . evalPtr
+
+evalPtr :: PtrExpr -> RunBoard (Integer, Integer, Integer, Integer, Integer)
+evalPtr (PtrLit (Pointer b x y dx dy)) = (,,,,) <$> evalExpr b <*> evalExpr x <*> evalExpr y <*> evalExpr dx <*> evalExpr dy
+evalPtr (Add a b) = pointerOp (+) <$> evalPtr a <*> evalPtr b
+evalPtr (Sub a b) = pointerOp (-) <$> evalPtr a <*> evalPtr b
+
+pointerOp :: (Integer -> Integer -> Integer) -> (Integer, Integer, Integer, Integer, Integer) -> (Integer, Integer, Integer, Integer, Integer) -> (Integer, Integer, Integer, Integer, Integer)
+pointerOp op (ab, ax, ay, adx, ady) (_, bx, by, bdx, bdy) = (ab, op ax bx, op ay by, op adx bdx, op ady bdy)
+
+withBoard :: RunBoard a -> Run a
+withBoard r = lift . runReaderT r . stateBoard =<< get
+
+(!?) :: (IArray a e, Ix i) => a i e -> i -> Maybe e
+a !? i
+  | inRange (bounds a) i = Just $ a ! i
+  | otherwise = Nothing

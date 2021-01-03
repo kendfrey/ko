@@ -36,6 +36,8 @@ A program begins with an empty board. Execution starts at the first command, and
 
 ### Program Syntax
 
+TODO out of date
+
 A Ko program consists of zero or more statements.
 
 ```bnf
