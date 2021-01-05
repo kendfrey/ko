@@ -6,6 +6,7 @@ module Koi.Program
   , PtrExpr(..)
   , Pointer(..)
   , Command(..)
+  , CommandInfo
   , evalProgram
   ) where
 
@@ -13,12 +14,17 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State hiding (state)
 import Data.Array.IArray
+import Data.List.NonEmpty
+import qualified Data.Set as S
 import Data.Text (Text)
+import Data.Void
 import Koi.Board
+import Text.Megaparsec
 
 data Program = Program
   { programSize :: (Integer, Integer)
-  , programCode :: Array Integer Command
+  , programCode :: Array Integer CommandInfo
+  , programStart :: PosState Text
   }
 
 data Expr
@@ -39,18 +45,20 @@ data Command
   | If PtrExpr Expr
   | Copy PtrExpr PtrExpr
 
+type CommandInfo = (Int, Int, Command)
+
 data ProgramState = ProgramState { stateProgram :: Program, stateBoard :: Board, statePc :: Integer, stateHalted :: Bool }
 
 type ProgramResult = Board
 
-type Run = StateT ProgramState (ExceptT Text IO)
+type Run = StateT ProgramState (ExceptT String IO)
 
-evalProgram :: Program -> ExceptT Text IO ProgramResult
+evalProgram :: Program -> ExceptT (ParseErrorBundle Text Void) IO ProgramResult
 evalProgram program = do
   board <- liftIO . newBoard $ programSize program
   stateBoard <$> execStateT runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
 
-runProgram :: Run ()
+runProgram :: StateT ProgramState (ExceptT (ParseErrorBundle Text Void) IO) ()
 runProgram = do
   stepProgram
   halted <- gets stateHalted
@@ -59,12 +67,14 @@ runProgram = do
   else
     runProgram
 
-stepProgram :: Run ()
+stepProgram :: StateT ProgramState (ExceptT (ParseErrorBundle Text Void) IO) ()
 stepProgram = do
   state <- get
-  case programCode (stateProgram state) !? statePc state of
-    Just cmd -> runCommand cmd -- TODO: include command information in error messages
-    Nothing -> throwError "Execution moved outside the code." -- TODO: this can be checked in jumpState and will improve the error message
+  let (start, _, cmd) = programCode (stateProgram state) ! statePc state
+  mapStateT (withExceptT . makeParseError start . programStart $ stateProgram state) $ runCommand cmd
+
+makeParseError :: Int -> PosState Text -> String -> ParseErrorBundle Text Void
+makeParseError start posState msg = ParseErrorBundle ((:| []) . FancyError start . S.singleton $ ErrorFail msg) posState
 
 runCommand :: Command -> Run ()
 
@@ -96,12 +106,15 @@ runCommand (Copy to from) = do
 jumpState :: Integer -> Run ()
 jumpState pos = do
   state <- get
-  put state { statePc = pos }
+  if inRange (bounds . programCode $ stateProgram state) pos then
+    put state { statePc = pos }
+  else
+    throwError $ "Cannot go to " ++ show pos ++ " because there is no code at that location."
 
 stepState :: Run ()
 stepState = do
-  state <- get
-  put state { statePc = statePc state + 1 }
+  pos <- gets statePc
+  jumpState (pos + 1)
 
 playPointer :: Player -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard ()
 playPointer _ _ b _ _ _ _ | b <= 0 = pure ()
@@ -154,8 +167,3 @@ pointerOp op (ab, ax, ay, adx, ady) (_, bx, by, bdx, bdy) = (ab, op ax bx, op ay
 
 withBoard :: RunBoard a -> Run a
 withBoard r = lift . runReaderT r . stateBoard =<< get
-
-(!?) :: (IArray a e, Ix i) => a i e -> i -> Maybe e
-a !? i
-  | inRange (bounds a) i = Just $ a ! i
-  | otherwise = Nothing

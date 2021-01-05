@@ -17,7 +17,6 @@ import Control.Monad.Reader
 import Data.Array.IO
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Text (Text, pack)
 
 type Board = IOArray (Integer, Integer) BoardPos
 
@@ -26,7 +25,7 @@ data BoardPos = Empty | Stone Player
 data Player = Black | White
   deriving (Eq)
 
-type RunBoard = ReaderT Board (ExceptT Text IO)
+type RunBoard = ReaderT Board (ExceptT String IO)
 
 newBoard :: (Integer, Integer) -> IO Board
 newBoard (w, h) = newArray ((0, 0), (w - 1, h - 1)) Empty
@@ -45,7 +44,7 @@ readBoard pos = do
   stone <- safeReadBoard pos
   case stone of
     Just s -> pure s
-    Nothing -> throwError "This move is outside the board."
+    Nothing -> throwError $ "This move " ++ show pos ++ " is outside the board."
 
 writeBoard :: (Integer, Integer) -> BoardPos -> RunBoard ()
 writeBoard pos stone = do
@@ -54,20 +53,23 @@ writeBoard pos stone = do
   if inRange bounds pos then
     liftIO $ writeArray board pos stone
   else
-    throwError "This move is outside the board."
+    throwError $ "This move " ++ show pos ++ " is outside the board."
 
-showBoard :: RunBoard Text
+showBoard :: ReaderT Board IO String
 showBoard = do
   (_, ub) <- liftIO =<< asks getBounds
-  pack <$> showBoardImpl ub (0, 0)
+  showBoardImpl ub (0, 0)
 
-showBoardImpl :: (Integer, Integer) -> (Integer, Integer) -> RunBoard String
+showBoardImpl :: (Integer, Integer) -> (Integer, Integer) -> ReaderT Board IO String
 showBoardImpl ub@(ubx, uby) (x, y)
   | y > uby = pure ""
   | x > ubx = ('\n' :) <$> showBoardImpl ub (0, y + 1)
   | otherwise = do
-    stone <- readBoard (x, y)
+    stone <- mapReaderT ((fromRight <$>) . runExceptT) $ readBoard (x, y)
     (stoneChar stone :) . (' ' :) <$> showBoardImpl ub (x + 1, y)
+  where
+    fromRight (Right r) = r
+    fromRight _ = error "fromRight"
 
 stoneChar :: BoardPos -> Char
 stoneChar Empty = '.'
@@ -78,15 +80,16 @@ playStone :: (Integer, Integer) -> Player -> RunBoard ()
 playStone pos player = do
   stone <- readBoard pos
   case stone of
-    Stone player' | player' == player -> pure () -- If the stone already exists, do nothing
-                  | otherwise -> throwError "This move is already occupied." -- If the other player's stone is there, error.
+    Stone player'
+      | player' == player -> pure () -- If the stone already exists, do nothing
+      | otherwise -> throwError $ "This move " ++ show pos ++ " is already occupied." -- If the other player's stone is there, error.
     Empty -> do
       let adj = adjacent pos
       opponentStones <- filterM (isOpponent player) adj
       deadOpponentStones <- filterM (isCapturable pos) opponentStones
       isSuicide <- not <$> searchLiberty player (S.singleton pos) (S.fromList adj)
       if isSuicide && null deadOpponentStones then
-        throwError "This move is suicide."
+        throwError $ "This move " ++ show pos ++ " is suicide."
       else do
         mapM_ killGroupFrom deadOpponentStones
         writeBoard pos $ Stone player

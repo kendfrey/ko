@@ -17,7 +17,7 @@ import Data.Text (Text, pack, unpack)
 import Data.Void
 import Koi.Board
 import Koi.Program
-import Text.Megaparsec hiding (State, label)
+import Text.Megaparsec hiding (State)
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
@@ -44,14 +44,15 @@ parseProgram fileName code = evalState (runParserT program fileName code) defaul
 
 program :: Parser Program
 program = do
+  posState <- statePosState <$> getParserState
   skipSpace
   unresolvedStatements <- catMaybes <$> many statement
   eof <|> void statement -- The statement should never be parsed, but it improves the error message
   statements <- sequence unresolvedStatements
   s <- get
-  pure Program { programSize = fromMaybe (256, 256) $ size s, programCode = listToArray statements }
+  pure Program { programSize = fromMaybe (256, 256) $ size s, programCode = listToArray statements, programStart = posState }
 
-statement :: Parser (Maybe (Parser Command))
+statement :: Parser (Maybe (Parser CommandInfo))
 statement = Nothing <$ pragma <|> Just <$> command
 
 pragma :: Parser ()
@@ -99,12 +100,14 @@ define name val pos = do
     else
       put $ s { definitions = M.insert name val $ definitions s }
 
-command :: Parser (Parser Command)
+command :: Parser (Parser CommandInfo)
 command = do
+  start <- getOffset
   cmd <- gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> copyCommand
+  end <- getOffset
   s <- get
   put s { commandIndex = commandIndex s + 1 }
-  pure cmd
+  pure $ (start, end, ) <$> cmd
 
 gotoCommand :: Parser (Parser Command)
 gotoCommand = do
