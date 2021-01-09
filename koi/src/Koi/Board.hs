@@ -1,22 +1,27 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module Koi.Board
   ( Board
   , BoardPos(..)
   , Player(..)
   , RunBoard
+  , RunParsed
   , newBoard
   , readBoard
   , showBoard
   , playStone
+  , parseBoard
   ) where
 
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Array.IO
+import Data.Functor
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Text (Text, pack)
+import Data.Void
+import Text.Megaparsec
+import Text.Megaparsec.Char
 
 type Board = IOArray (Integer, Integer) BoardPos
 
@@ -27,8 +32,10 @@ data Player = Black | White
 
 type RunBoard = ReaderT Board (ExceptT String IO)
 
+type RunParsed = ExceptT (ParseErrorBundle Text Void) IO
+
 newBoard :: (Integer, Integer) -> IO Board
-newBoard (w, h) = newArray ((0, 0), (w - 1, h - 1)) Empty
+newBoard (h, w) = newArray ((0, 0), (h - 1, w - 1)) Empty
 
 safeReadBoard :: (Integer, Integer) -> RunBoard (Maybe BoardPos)
 safeReadBoard pos = do
@@ -44,7 +51,7 @@ readBoard pos = do
   stone <- safeReadBoard pos
   case stone of
     Just s -> pure s
-    Nothing -> throwError $ "This move " ++ show pos ++ " is outside the board."
+    Nothing -> throwError $ "This move " ++ showMove pos ++ " is outside the board."
 
 writeBoard :: (Integer, Integer) -> BoardPos -> RunBoard ()
 writeBoard pos stone = do
@@ -53,20 +60,20 @@ writeBoard pos stone = do
   if inRange bounds pos then
     liftIO $ writeArray board pos stone
   else
-    throwError $ "This move " ++ show pos ++ " is outside the board."
+    throwError $ "This move " ++ showMove pos ++ " is outside the board."
 
-showBoard :: ReaderT Board IO String
+showBoard :: ReaderT Board IO Text
 showBoard = do
   (_, ub) <- liftIO =<< asks getBounds
-  showBoardImpl ub (0, 0)
+  pack <$> showBoardImpl ub (0, 0)
 
 showBoardImpl :: (Integer, Integer) -> (Integer, Integer) -> ReaderT Board IO String
-showBoardImpl ub@(ubx, uby) (x, y)
+showBoardImpl ub@(uby, ubx) (y, x)
   | y > uby = pure ""
-  | x > ubx = ('\n' :) <$> showBoardImpl ub (0, y + 1)
+  | x > ubx = ('\n' :) <$> showBoardImpl ub (y + 1, 0)
   | otherwise = do
-    stone <- mapReaderT ((fromRight <$>) . runExceptT) $ readBoard (x, y)
-    (stoneChar stone :) . (' ' :) <$> showBoardImpl ub (x + 1, y)
+    stone <- mapReaderT ((fromRight <$>) . runExceptT) $ readBoard (y, x)
+    (stoneChar stone :) . (' ' :) <$> showBoardImpl ub (y, x + 1)
   where
     fromRight (Right r) = r
     fromRight _ = error "fromRight"
@@ -82,14 +89,14 @@ playStone pos player = do
   case stone of
     Stone player'
       | player' == player -> pure () -- If the stone already exists, do nothing
-      | otherwise -> throwError $ "This move " ++ show pos ++ " is already occupied." -- If the other player's stone is there, error.
+      | otherwise -> throwError $ "This move " ++ showMove pos ++ " is already occupied." -- If the other player's stone is there, error.
     Empty -> do
       let adj = adjacent pos
       opponentStones <- filterM (isOpponent player) adj
       deadOpponentStones <- filterM (isCapturable pos) opponentStones
       isSuicide <- not <$> searchLiberty player (S.singleton pos) (S.fromList adj)
       if isSuicide && null deadOpponentStones then
-        throwError $ "This move " ++ show pos ++ " is suicide."
+        throwError $ "This move " ++ showMove pos ++ " is suicide."
       else do
         mapM_ killGroupFrom deadOpponentStones
         writeBoard pos $ Stone player
@@ -141,4 +148,24 @@ killGroup player pos = do
     _ -> pure ()
 
 adjacent :: (Integer, Integer) -> [(Integer, Integer)]
-adjacent (x, y) = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+adjacent (y, x) = [(y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)]
+
+showMove :: (Integer, Integer) -> String
+showMove (y, x) = "[" ++ show x ++ "," ++ show y ++ "]"
+
+type Parser = Parsec Void Text
+
+parseBoard :: (Integer, Integer) -> String -> Text -> RunParsed Board
+parseBoard size fileName input = do
+  case runParser (boardParser size) fileName input of
+    Right board -> liftIO board
+    Left err -> throwError err
+
+boardParser :: (Integer, Integer) -> Parser (IO Board)
+boardParser (height, width) = newListArray ((0, 0), (height - 1, width - 1)) . join <$> count (fromInteger height) (lineParser width) <* eof
+
+lineParser :: Integer -> Parser [BoardPos]
+lineParser width = hspace *> count (fromInteger width) cellParser <* eol
+
+cellParser :: Parser BoardPos
+cellParser = (char '.' $> Empty <|> char 'X' $> Stone Black <|> char 'O' $> Stone White) <* hspace

@@ -71,7 +71,7 @@ sizePragma = do
     width <- positiveNumber
     symbol ","
     height <- positiveNumber
-    put s { size = Just (width, height) }
+    put s { size = Just (height, width) }
 
 definePragma :: Parser ()
 definePragma = do

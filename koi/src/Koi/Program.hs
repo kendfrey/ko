@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, TupleSections #-}
+{-# LANGUAGE TupleSections #-}
 
 module Koi.Program
   ( Program(..)
@@ -53,12 +53,10 @@ type ProgramResult = Board
 
 type Run = StateT ProgramState (ExceptT String IO)
 
-evalProgram :: Program -> ExceptT (ParseErrorBundle Text Void) IO ProgramResult
-evalProgram program = do
-  board <- liftIO . newBoard $ programSize program
-  stateBoard <$> execStateT runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
+evalProgram :: Program -> Board -> RunParsed ProgramResult
+evalProgram program board = stateBoard <$> execStateT runProgram ProgramState { stateProgram = program, stateBoard = board, statePc = 0, stateHalted = False }
 
-runProgram :: StateT ProgramState (ExceptT (ParseErrorBundle Text Void) IO) ()
+runProgram :: StateT ProgramState RunParsed ()
 runProgram = do
   stepProgram
   halted <- gets stateHalted
@@ -67,14 +65,14 @@ runProgram = do
   else
     runProgram
 
-stepProgram :: StateT ProgramState (ExceptT (ParseErrorBundle Text Void) IO) ()
+stepProgram :: StateT ProgramState RunParsed ()
 stepProgram = do
   state <- get
   let (start, _, cmd) = programCode (stateProgram state) ! statePc state
   mapStateT (withExceptT . makeParseError start . programStart $ stateProgram state) $ runCommand cmd
 
 makeParseError :: Int -> PosState Text -> String -> ParseErrorBundle Text Void
-makeParseError start posState msg = ParseErrorBundle ((:| []) . FancyError start . S.singleton $ ErrorFail msg) posState
+makeParseError start posState msg = ParseErrorBundle ((:| []) . FancyError start . S.singleton . ErrorFail $ "Runtime error: " ++ msg) posState
 
 runCommand :: Command -> Run ()
 
@@ -120,7 +118,7 @@ playPointer :: Player -> Integer -> Integer -> Integer -> Integer -> Integer -> 
 playPointer _ _ b _ _ _ _ | b <= 0 = pure ()
 playPointer player val b x y dx dy = do
   if odd val then
-    playStone (x, y) player
+    playStone (y, x) player
   else
     pure ()
   playPointer player (val `div` 2) (b - 1) (x + dx) (y + dy) dx dy
@@ -128,9 +126,9 @@ playPointer player val b x y dx dy = do
 copyPointer :: Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard ()
 copyPointer b _ _ _ _ _ _ _ _ | b <= 0 = pure ()
 copyPointer b tx ty tdx tdy fx fy fdx fdy = do
-  stone <- readBoard (fx, fy)
+  stone <- readBoard (fy, fx)
   case stone of
-    Stone player -> playStone (tx, ty) player
+    Stone player -> playStone (ty, tx) player
     Empty -> pure ()
   copyPointer (b - 1) (tx + tdx) (ty + tdy) tdx tdy (fx + fdx) (fy + fdy) fdx fdy
 
@@ -141,7 +139,7 @@ toBit _ = 1
 readPointer :: Integer -> Integer -> Integer -> Integer -> Integer -> RunBoard Integer
 readPointer b _ _ _ _ | b <= 0 = pure 0
 readPointer b x y dx dy = do
-  bit <- readBoard (x, y)
+  bit <- readBoard (y, x)
   rest <- readPointer (b - 1) (x + dx) (y + dy) dx dy
   pure $ rest * 2 + toBit bit
 

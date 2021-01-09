@@ -1,0 +1,23 @@
+_size(9, 9)
+
+if([0,0], check)
+goto(end)
+
+_label(check)
+black(<2,1,0,-1,1>)
+if([0,0], black)
+
+white(<5,2,2,0,1>, 15)
+white(<5,3,2,0,1>, 16)
+white(<5,4,2,0,1>, 12)
+white(<5,5,2,0,1>, 16)
+white(<5,6,2,0,1>, 15)
+goto(end)
+
+_label(black)
+black(<5,3,2,0,1>, 31)
+black(<5,4,2,0,1>, 21)
+black(<5,5,2,0,1>, 10)
+
+_label(end)
+pass()
