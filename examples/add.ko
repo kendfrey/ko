@@ -1,12 +1,58 @@
-# function add(a, b) { while (b) { c = a & b; a = a | b; a = a & ~c; b = c << 1; } return a; }
+_size(64, 16)
+_define(add_a, <16,63,1,-2,0>)
+_define(add_b, <17,63,5,-2,0>)
+_define(add_c, <16,63,9,-2,0>)
+_define(carry, [-32,0]+add_b)
+_define(add_return, <8,63,13,-2,0>)
+
+white(add_a+[0,-1])
+white(add_a+[-1,0])
+white(add_a+[0,1])
+black(add_a+[-1,1])
+black(add_a+[0,2])
+
+white(add_b+[0,-1])
+white(add_b+[-1,0])
+white(add_b+[0,1])
+black(add_b+[-1,1])
+black(add_b+[0,2])
+
+white(add_c+[0,-1])
+white(add_c+[-1,0])
+white(add_c+[0,1])
+black(add_c+[-1,1])
+black(add_c+[0,2])
+
+white(add_return+[0,-1])
+white(add_return+[-1,0])
+white(add_return+[0,1])
+black(add_return+[-1,1])
+black(add_return+[0,2])
+
+_define(in_a, <16,15,0,-1,0>)
+_define(in_b, <16,15,1,-1,0>)
+_define(out, <16,15,2,-1,0>)
+
+black(in_a, 44619)
+black(in_b, 28420)
+
+white(add_a+[0,1])
+white(add_b+[0,1])
+black(add_a, in_a)
+black(add_b, in_b)
+black(add_return, end)
+goto(add)
+_label(end)
+black(out, add_a)
+pass()
+
 _label(add)
-# TODO: set carry to 0
 black(add_c)
-white(add_c+[0,2], add_a+[0,2])
-white(add_c+[0,2], add_b+[0,2])
+white(add_c+[0,1], add_a+[0,1])
+white(add_c+[0,1], add_b+[0,1])
 black(add_a, add_b)
-white(add_a+[0,2], add_c)
-white(add_b+[0,2])
-black(add_b+[2,0], add_c) # the "extra" bit of add_b becomes a carry flag
-if(add_b, add)
+white(add_a+[0,1], add_c)
+white(add_b+[0,1])
+black(add_b+[-2,0], add_c) # the "extra" bit of add_b becomes a carry flag
+if(<16,0,0,0,0>+add_b, add)
 goto(add_return)
