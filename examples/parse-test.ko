@@ -1,4 +1,4 @@
-_size(0x10, 02) #16x2
+_size(0x10, 08) #16x8
 _define(line1, <0x0f,0o00,0b0,0b001,0>) # <15,0,0,1,0>
 _define(lblptr, <4,5,0,1,0>)
 
@@ -11,4 +11,5 @@ _label(_continue)
 white(<2,1,0,0,1>, <2,0,0,0,1>)
 copy(line1+[1,1], line1)
 black([3,0] + [-1,0])
+array(<4,0,2,0,1>, line1)
 pass()

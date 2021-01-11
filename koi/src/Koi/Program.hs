@@ -44,6 +44,7 @@ data Command
   | Play Player PtrExpr Expr
   | If PtrExpr Expr
   | Copy PtrExpr PtrExpr
+  | Array PtrExpr PtrExpr
 
 type CommandInfo = (Int, Int, Command)
 
@@ -101,6 +102,12 @@ runCommand (Copy to from) = do
   withBoard $ copyPointer (min tb fb) tx ty tdx tdy fx fy fdx fdy
   stepState
 
+runCommand (Array to from) = do
+  (tb, tx, ty, tdx, tdy) <- evalPtr' to
+  fromPtr <- evalPtr' from
+  withBoard $ makeArray tb tx ty tdx tdy fromPtr
+  stepState
+
 jumpState :: Integer -> Run ()
 jumpState pos = do
   state <- get
@@ -131,6 +138,12 @@ copyPointer b tx ty tdx tdy fx fy fdx fdy = do
     Stone player -> playStone (ty, tx) player
     Empty -> pure ()
   copyPointer (b - 1) (tx + tdx) (ty + tdy) tdx tdy (fx + fdx) (fy + fdy) fdx fdy
+
+makeArray :: Integer -> Integer -> Integer -> Integer -> Integer -> (Integer, Integer, Integer, Integer, Integer) -> RunBoard ()
+makeArray b _ _ _ _ _ | b <= 0 = pure ()
+makeArray tb tx ty tdx tdy from@(fb, fx, fy, fdx, fdy) = do
+  copyPointer fb tx ty fdx fdy fx fy fdx fdy
+  makeArray (tb - 1) (tx + tdx) (ty + tdy) tdx tdy from
 
 toBit :: BoardPos -> Integer
 toBit Empty = 0

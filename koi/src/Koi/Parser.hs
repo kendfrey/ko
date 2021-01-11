@@ -103,7 +103,7 @@ define name val pos = do
 command :: Parser (Parser CommandInfo)
 command = do
   start <- getOffset
-  cmd <- gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> copyCommand
+  cmd <- gotoCommand <|> passCommand <|> playCommand "black" (Play Black) <|> playCommand "white" (Play White) <|> ifCommand <|> copyCommand <|> arrayCommand
   end <- getOffset
   s <- get
   put s { commandIndex = commandIndex s + 1 }
@@ -146,6 +146,15 @@ copyCommand = do
     symbol ","
     from <- pptr
     pure $ Copy <$> to <*> from
+
+arrayCommand :: Parser (Parser Command)
+arrayCommand = do
+  word "array"
+  parens $ do
+    to <- pptr
+    symbol ","
+    from <- pptr
+    pure $ Array <$> to <*> from
 
 pexpr :: Parser (Parser Expr)
 pexpr = resolveExpr <$> expr
