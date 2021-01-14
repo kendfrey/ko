@@ -1,0 +1,410 @@
+# ------------------------------ INITIALIZATION -------------------------------
+
+_size(0x80, 0x200)
+
+# - Initialize erasable memory -
+
+# Memory size parameters
+_define(bits, 0x10)
+_define(bitsx, 0x11)
+_define(bytes, 0x100)
+_define(m_origin, [122,0])
+
+# Create a memory row
+_define(m, <bits,0,0,-4,0>+m_origin)
+_define(ma, <bitsx,4,0,0,0>+m)
+_define(not, [-1,0])
+white(m+[1,0])
+white(m+[-1,0])
+white(m+[0,1])
+black(m+[-2,0])
+black(m+[-1,1])
+
+# Duplicate it
+_define(m_col, <bytes,0,0,0,2>+m_origin)
+array(m_col+[1,0], m+[1,0])
+array(m_col+[-1,0], m+[-1,0])
+array(m_col+[0,1], m+[0,1])
+array(m_col+[-2,0], m+[-2,0])
+array(m_col+[-1,1], m+[-1,1])
+
+# - Registers (static memory) -
+
+# Expressions
+_define(acc, m+[0,0])
+_define(opd, m+[0,2])
+_define(tmp, m+[0,4])
+_define(lbl, m+[0,6])
+_define(rtn, m+[0,8])
+_define(flags, m+[0,10])
+_define(cp, m+[0,12])
+_define(sp, m+[0,14])
+_define(gpa, m+[0,16])
+_define(gpb, m+[0,18])
+_define(gpc, m+[0,20])
+_define(gpd, m+[0,22])
+
+# Pointer lookup expressions
+_define(_acc, m+[0,ma+[0,0]])
+_define(_opd, m+[0,ma+[0,2]])
+_define(_tmp, m+[0,ma+[0,4]])
+_define(_lbl, m+[0,ma+[0,6]])
+_define(_cp, m+[0,ma+[0,12]])
+_define(_sp, m+[0,ma+[0,14]])
+_define(_gpa, m+[0,ma+[0,16]])
+_define(_gpb, m+[0,ma+[0,18]])
+_define(_gpc, m+[0,ma+[0,20]])
+_define(_gpd, m+[0,ma+[0,24]])
+
+# Addresses
+_define(acc_a, 0)
+_define(opd_a, 1)
+_define(tmp_a, 2)
+_define(lbl_a, 3)
+_define(rtn_a, 4) # return address for non-stack procedures
+_define(flags_a, 5)
+_define(cp_a, 6) # call stack pointer
+_define(sp_a, 7) # stack pointer
+_define(gpa_a, 8)
+_define(gpb_a, 9)
+_define(gpc_a, 10)
+_define(gpd_a, 11)
+
+# Initialize stack
+black(cp, 0xf) # call stack begins at 0x10
+black(sp, 0x7f) # data stack begins at 0x80
+
+goto(main)
+
+# --------------------------- NON-STACK PROCEDURES ----------------------------
+
+# Registers:
+# - acc (in, out): the accumulator (pointer)
+# - opd (in): value to add to the accumulator
+# - tmp (): temporary register
+# - rtn (in): label to return to
+
+_label(add_prim)
+	# tmp = [acc] & opd
+	black(tmp)
+	white(tmp+not, _acc+not)
+	white(tmp+not, opd+not)
+
+	# [acc] = ([acc] | opd) & ~tmp = [acc] ^ opd
+	black(_acc, opd)
+	white(_acc+not, tmp)
+
+	# opd = tmp << 1
+	white(opd+not)
+	black(opd, tmp+[4,0]) # TODO: carry bit is discarded, consider saving it.
+
+	# loop until carry word is zero
+	if(opd, add_prim)
+	goto(rtn)
+
+# Registers:
+# - acc (in, out): the accumulator (pointer)
+# - opd (in): value to subtract from the accumulator
+# - tmp (): temporary register
+# - rtn (in): label to return to
+
+_label(sub_prim)
+	# tmp = ~[acc] & opd
+	black(tmp)
+	white(tmp+not, _acc)
+	white(tmp+not, opd+not)
+
+	# [acc] = ([acc] & ~opd) | tmp = [acc] ^ opd
+	white(_acc+not, opd)
+	black(_acc, tmp)
+
+	# opd = tmp << 1
+	white(opd+not)
+	black(opd, tmp+[4,0]) # TODO: borrow bit is discarded, consider saving it.
+
+	# loop until borrow word is zero
+	if(opd, sub_prim)
+	goto(rtn)
+
+# Registers:
+# - acc (): temporary register
+# - opd (): temporary register
+# - tmp (): temporary register
+# - rtn (in): label to return to
+
+_label(push)
+	# acc = &sp
+	white(acc+not)
+	black(acc, sp_a)
+
+	# opd = 1
+	white(opd+not)
+	black(opd, 1)
+
+	# add
+	goto(add_prim)
+
+# Registers:
+# - acc (): temporary register
+# - opd (): temporary register
+# - tmp (): temporary register
+# - rtn (in): label to return to
+
+_label(pop)
+	# acc = &sp
+	white(acc+not)
+	black(acc, sp_a)
+
+	# opd = 1
+	white(opd+not)
+	black(opd, 1)
+
+	# subtract
+	goto(sub_prim)
+
+# Registers:
+# - acc (): temporary register
+# - opd (): temporary register
+# - tmp (): temporary register
+# - lbl (in): label to jump to
+# - rtn (in): label to return to
+
+_label(call)
+	# push the return label to the call stack
+	white(_cp+[0,2]+not)
+	black(_cp+[0,2], rtn)
+
+	# increment the call stack pointer
+	white(acc+not)
+	black(acc, cp_a)
+
+	white(opd+not)
+	black(opd, 1)
+
+	white(rtn+not)
+	black(rtn, lbl)
+
+	goto(add_prim) # This will increment the call stack pointer and then "return" to the callee
+
+# Registers:
+# - acc (): temporary register
+# - opd (): temporary register
+# - tmp (): temporary register
+# - rtn (): label to return to
+
+_label(return)
+	# read the return label from the call stack
+	white(rtn+not)
+	black(rtn, _cp)
+
+	# decrement the call stack pointer
+	white(acc+not)
+	black(acc, cp_a)
+
+	white(opd+not)
+	black(opd, 1)
+
+	goto(sub_prim) # This will decrement the call stack pointer and then "return" to the caller
+
+# ------------------------------- PROGRAM CODE --------------------------------
+
+_label(main)
+	# push a value to the stack
+	white(rtn+not)
+	black(rtn, main_1)
+	goto(push)
+	_label(main_1)
+	white(_sp+not)
+	black(_sp, 3)
+
+	# push a value to the stack
+	white(rtn+not)
+	black(rtn, main_2)
+	goto(push)
+	_label(main_2)
+	white(_sp+not)
+	black(_sp, 3)
+
+	# call the function
+	white(lbl+not)
+	black(lbl, ackermann)
+	white(rtn+not)
+	black(rtn, main_3)
+	goto(call)
+	_label(main_3)
+
+	# copy the result to a blank area
+	black(<16,15,0,-1,0>, _sp)
+
+	pass()
+
+# Example stack-based add function
+_label(add)
+	# decrement the stack pointer
+	white(rtn+not)
+	black(rtn, add_1)
+	goto(pop)
+	_label(add_1)
+
+	# add
+	white(acc+not)
+	black(acc, sp)
+	white(opd+not)
+	black(opd, _sp+[0,2])
+	white(rtn+not)
+	black(rtn, add_2)
+	goto(add_prim)
+	_label(add_2)
+	goto(return)
+
+# Example stack-based subtract function
+_label(sub)
+	# decrement the stack pointer
+	white(rtn+not)
+	black(rtn, sub_1)
+	goto(pop)
+	_label(sub_1)
+
+	# subtract
+	white(acc+not)
+	black(acc, sp)
+	white(opd+not)
+	black(opd, _sp+[0,2])
+	white(rtn+not)
+	black(rtn, sub_2)
+	goto(sub_prim)
+	_label(sub_2)
+	goto(return)
+
+_label(ackermann)
+	# pop gpb
+	white(gpb+not)
+	black(gpb, _sp)
+	white(rtn+not)
+	black(rtn, ackermann_1)
+	goto(pop)
+	_label(ackermann_1)
+	
+	# pop gpa
+	white(gpa+not)
+	black(gpa, _sp)
+	white(rtn+not)
+	black(rtn, ackermann_2)
+	goto(pop)
+	_label(ackermann_2)
+
+	# if gpa == 0
+	if(gpa, ackermann_2_)
+		# gpb += 1
+		white(acc+not)
+		black(acc, gpb_a)
+		white(opd+not)
+		black(opd, 1)
+		white(rtn+not)
+		black(rtn, ackermann_1_3)
+		goto(add_prim)
+		_label(ackermann_1_3)
+
+		# push gpb
+		white(rtn+not)
+		black(rtn, ackermann_1_4)
+		goto(push)
+		_label(ackermann_1_4)
+		white(_sp+not)
+		black(_sp, gpb)
+
+		# A(0, n) = n + 1
+		goto(return)
+
+	# else if gpb == 0
+	_label(ackermann_2_)
+	if(gpb, ackermann_3_)
+		# gpa -= 1
+		white(acc+not)
+		black(acc, gpa_a)
+		white(opd+not)
+		black(opd, 1)
+		white(rtn+not)
+		black(rtn, ackermann_2_1)
+		goto(sub_prim)
+		_label(ackermann_2_1)
+
+		# push gpa
+		white(rtn+not)
+		black(rtn, ackermann_2_2)
+		goto(push)
+		_label(ackermann_2_2)
+		white(_sp+not)
+		black(_sp, gpa)
+
+		# push 1
+		white(rtn+not)
+		black(rtn, ackermann_2_3)
+		goto(push)
+		_label(ackermann_2_3)
+		white(_sp+not)
+		black(_sp, 1)
+
+		# A(m, 0) = A(m - 1, 1)
+		goto(ackermann) # tail recursion!
+
+	# else
+	_label(ackermann_3_)
+		# gpc = gpa
+		white(gpc+not)
+		black(gpc, gpa)
+
+		# gpa -= 1
+		white(acc+not)
+		black(acc, gpa_a)
+		white(opd+not)
+		black(opd, 1)
+		white(rtn+not)
+		black(rtn, ackermann_3_1)
+		goto(sub_prim)
+		_label(ackermann_3_1)
+
+		# gpb -= 1
+		white(acc+not)
+		black(acc, gpb_a)
+		white(opd+not)
+		black(opd, 1)
+		white(rtn+not)
+		black(rtn, ackermann_3_2)
+		goto(sub_prim)
+		_label(ackermann_3_2)
+
+		# push gpa
+		white(rtn+not)
+		black(rtn, ackermann_3_3)
+		goto(push)
+		_label(ackermann_3_3)
+		white(_sp+not)
+		black(_sp, gpa)
+
+		# push gpc
+		white(rtn+not)
+		black(rtn, ackermann_3_4)
+		goto(push)
+		_label(ackermann_3_4)
+		white(_sp+not)
+		black(_sp, gpc)
+
+		# push gpb
+		white(rtn+not)
+		black(rtn, ackermann_3_5)
+		goto(push)
+		_label(ackermann_3_5)
+		white(_sp+not)
+		black(_sp, gpb)
+
+		# call ackermann
+		white(lbl+not)
+		black(lbl, ackermann)
+		white(rtn+not)
+		black(rtn, ackermann_3_6)
+		goto(call)
+		_label(ackermann_3_6)
+
+		# A(m, n) = A(m - 1, A(m, n - 1))
+		goto(ackermann) # tail recursion!
