@@ -1,13 +1,13 @@
 # ------------------------------ INITIALIZATION -------------------------------
 
-_size(0x80, 0x200)
+_size(0x80, 0x2000)
 
 # - Initialize erasable memory -
 
 # Memory size parameters
 _define(bits, 0x10)
 _define(bitsx, 0x11)
-_define(bytes, 0x100)
+_define(bytes, 0x1000)
 _define(m_origin, [122,0])
 
 # Create a memory row
@@ -72,7 +72,7 @@ _define(gpd_a, 11)
 
 # Initialize stack
 black(cp, 0xf) # call stack begins at 0x10
-black(sp, 0x7f) # data stack begins at 0x80
+black(sp, 0x7ff) # data stack begins at 0x800
 
 goto(main)
 
@@ -223,7 +223,7 @@ _label(main)
 	goto(push)
 	_label(main_2)
 	white(_sp+not)
-	black(_sp, 3)
+	black(_sp, 4)
 
 	# call the function
 	white(lbl+not)
